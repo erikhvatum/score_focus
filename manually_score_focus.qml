@@ -29,6 +29,7 @@ ExperimentManualFocusScorer {
             id: targetBox
             title: "Target"
             Layout.fillWidth: true
+            enabled: isValid
 
             GridLayout {
                 id: gridLayout1
@@ -41,13 +42,26 @@ ExperimentManualFocusScorer {
                 ComboBox {
                     id: timepointComboBox
                     Layout.fillWidth: true
+                    model: timePoints
+                    textRole: "display"
+                    onCurrentTextChanged: {
+                        print(currentText)
+                        manualFocusScore.timepoint = currentText
+                    }
                 }
 
                 Label { text: "Well: " }
 
-                SpinBox {
-                    id: wellSpinBox
+                ComboBox {
+                    id: wellComboBox
                     Layout.fillWidth: true
+                    model: hatchedWellIdxs
+                    textRole: "display"
+                    onCurrentTextChanged: {
+                        var t = parseInt(currentText)
+                        print(t)
+                        manualFocusScore.wellIdx = parseInt(currentText)
+                    }
                 }
             }
         }
@@ -56,16 +70,35 @@ ExperimentManualFocusScorer {
             id: scoringBox
             title: "Scoring"
             Layout.fillWidth: true
+            enabled: isValid
 
             GridLayout {
                 columns: 3
                 flow: GridLayout.LeftToRight
                 anchors.fill: parent
 
-                Label { text: "BF is focused: " }
+                Label {
+                    enabled: manualFocusScore.hasBf
+                    text: "BF is focused: "
+                }
 
                 CheckBox {
+                    enabled: manualFocusScore.hasBf
+                }
 
+                Item {
+                    Layout.fillWidth: true
+                }
+
+                Label {
+                    enabled: manualFocusScore.focusStackLen > 0
+                    text: "Best stack idx: "
+                }
+
+                SpinBox {
+                    enabled: manualFocusScore.focusStackLen > 0
+                    minimumValue: -1
+                    maximumValue: manualFocusScore.focusStackLen - 1
                 }
 
                 Item {
