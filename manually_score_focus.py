@@ -158,24 +158,25 @@ class ManualFocusScore(Qt.QObject):
 
     @Qt.pyqtSlot()
     def advanceToNextUnscored(self):
+        try:
+            wellIdxIdx = self.experimentalManualFocusScorer._hatchedWellIdxs.data.index(self._wellIdx)
+            timepointIdx = self.experimentalManualFocusScorer._timePoints.data.index(self._timePoint)
+        except ValueError:
+            return
         while True:
-            try:
-                wellIdxIdx = self.experimentalManualFocusScorer._hatchedWellIdxs.data.index(self._wellIdx)
-            except ValueError:
-                return
-            else:
-                if wellIdxIdx == len(self.experimentalManualFocusScorer._hatchedWellIdxs.data) - 1:
-                    try:
-                        timepointIdx = self.experimentalManualFocusScorer._timePoints.data.index(self._timePoint)
-                    except ValueError:
-                        return
-                    else:
-                        if timepointIdx < len(self.experimentalManualFocusScorer._timePoints.data) - 1:
-                            self.timepoint = self.experimentalManualFocusScorer._timePoints.data[timepointIdx + 1]
-                            self.wellIdx = self.experimentalManualFocusScorer._hatchedWellIdxs.data[0]
+            if wellIdxIdx == len(self.experimentalManualFocusScorer._hatchedWellIdxs.data) - 1:
+                if timepointIdx < len(self.experimentalManualFocusScorer._timePoints.data) - 1:
+                    timepointIdx += 1
+                    wellIdxIdx = 0
                 else:
-                    self.wellIdx = self.experimentalManualFocusScorer._hatchedWellIdxs.data[wellIdxIdx + 1]
-            if not list(self.experimentalManualFocusScorer.db.execute('select * from manual_focus_scores where well_idx=? and time_point=?', (self._wellIdx, self._timePoint))):
+                    return
+            else:
+                wellIdxIdx += 1
+            wellIdx = self.experimentalManualFocusScorer._hatchedWellIdxs.data[wellIdxIdx]
+            timepoint = self.experimentalManualFocusScorer._timePoints.data[timepointIdx]
+            if not list(self.experimentalManualFocusScorer.db.execute('select * from manual_focus_scores where well_idx=? and time_point=?', (wellIdx, timepoint))):
+                self.wellIdx = wellIdx
+                self.timepoint = timepoint
                 return
 
 
