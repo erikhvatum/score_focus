@@ -22,6 +22,7 @@
 #
 # Authors: Erik Hvatum <ice.rikh@gmail.com>
 
+import freeimage
 from pathlib import Path
 from PyQt5 import Qt
 import sqlite3
@@ -38,7 +39,6 @@ class SimpleListModel(Qt.QAbstractListModel):
         if midx.isValid():
             return Qt.QVariant(str(self.data[midx.row()]))
         if role == Qt.Qt.DisplayRole and midx.isValid():
-            print(self.data[midx.row()])
             return Qt.QVariant(str(self.data[midx.row()]))
         return super().data(midx, role)
 
@@ -48,7 +48,7 @@ class ManualFocusScore(Qt.QObject):
     hasBfChanged = Qt.pyqtSignal(bool)
     bfIsFocusedChanged = Qt.pyqtSignal(bool)
     focusStackLenChanged = Qt.pyqtSignal(int)
-    bestFocusedStackIdxChanged = Qt.pyqtSignal(int)
+    bestFocusStackIdxChanged = Qt.pyqtSignal(int)
 
     def __init__(self, experimentalManualFocusScorer):
         super().__init__()
@@ -58,8 +58,7 @@ class ManualFocusScore(Qt.QObject):
         self._hasBf = False
         self._bfIsFocused = False
         self._focusStackLen = 0
-        self._bestFocusedStackIdx = -1
-        self._noStore = False
+        self._bestFocusStackIdx = -1
 
     @Qt.pyqtProperty(int, notify=wellIdxChanged)
     def wellIdx(self):
@@ -71,8 +70,18 @@ class ManualFocusScore(Qt.QObject):
             if wellIdx not in self.experimentalManualFocusScorer._hatchedWellIdxs.data:
                 wellIdx = -1
             self._wellIdx = wellIdx
-            self._load()
+            self.showCurrentImage()
+            self.refresh()
             self.wellIdxChanged.emit(self._wellIdx)
+
+    def showCurrentImage(self):
+        if self._wellIdx != -1 and self._timePoint:
+            wellDPath = self.experimentalManualFocusScorer._experimentDPath / '{:02}'.format(self._wellIdx)
+            if self._bestFocusStackIdx == -1:
+                imageFPath = wellDPath / '{} bf.png'.format(self._timePoint)
+            else:
+                imageFPath = wellDPath / '{} focus-{:02}.png'.format(self._timePoint, self._bestFocusStackIdx)
+            rw.image = freeimage.read(str(imageFPath))
 
     @Qt.pyqtProperty(str)
     def timepoint(self, notify=timepointChanged):
@@ -84,46 +93,91 @@ class ManualFocusScore(Qt.QObject):
             if timePoint not in self.experimentalManualFocusScorer._timePoints.data:
                 timePoint = ""
             self._timePoint = timePoint
-            self._load()
+            self.showCurrentImage()
+            self.refresh()
             self.timepointChanged.emit(self._timePoint)
 
-    def _load(self):
-        self._noStore = True
-        try:
-            if self._wellIdx != -1 and self._timePoint:
-                q = list(self.experimentalManualFocusScorer.db.execute(
+    @Qt.pyqtSlot()
+    def refresh(self):
+        if self._wellIdx != -1 and self._timePoint:
+            q = list(
+                self.experimentalManualFocusScorer.db.execute(
                     'select has_bf, bf_is_focused, focus_stack_len, best_focus_stack_idx from manual_focus_scores where well_idx=? and time_point=?',
-                    (self._wellIdx, self._timePoint)))
-                if q:
-                    self._setHasBf(q['has_bf'])
-                    self.bfIsFocused = q['bf_is_focused']
-                    self._setFocusStackLen(q['focus_stack_len'])
-                    self.bestFocusStackIdx = q['best_focus_stack_idx']
+                    (self._wellIdx, self._timePoint)
+                )
+            )
+            if q:
+                self._setHasBf(q[0]['has_bf'])
+                self.bfIsFocused = q[0]['bf_is_focused']
+                self._setFocusStackLen(q[0]['focus_stack_len'])
+                self.bestFocusStackIdx = q[0]['best_focus_stack_idx']
+            else:
+                wellDPath = self.experimentalManualFocusScorer._experimentDPath / '{:02}'.format(self._wellIdx)
+                self._setHasBf((wellDPath / '{} bf.png'.format(self._timePoint)).exists())
+                self.bfIsFocused = False
+                stackFPaths = sorted(list(wellDPath.glob('{} focus-*.png'.format(self._timePoint))))
+                if stackFPaths:
+                    self._setFocusStackLen(int(str(stackFPaths[-1])[-6:-4]))
                 else:
-                    wellDPath = self.experimentalManualFocusScorer._experimentDPath / '{:02}'.format(self._wellIdx)
-                    self._setHasBf((wellDPath / '{} bf.png'.format(self._timePoint)).exists())
-                    self.bfIsFocused = False
-                    stackFPaths = sorted(list(wellDPath.glob('{} focus-*.png'.format(self._timePoint))))
-                    if stackFPaths:
-                        self._setFocusStackLen(int(str(stackFPaths[-1])[-6:-4]))
-                    else:
-                        self._setFocusStackLen(0)
-                    self.bestFocusStackIdx = -1
-        finally:
-            self._noStore = False
+                    self._setFocusStackLen(0)
+                self.bestFocusStackIdx = -1
 
-    def _store(self):
-        if self._wellIdx != -1 and self._timePoint and not self._noStore:
-            if list(self.experimentalManualFocusScorer.db.execute('select * from manual_focus_scores where well_idx=? and time_point="?"',
-                    self._wellIdx, self._timePoint)):
+    @Qt.pyqtSlot()
+    def commit(self):
+        if self._wellIdx != -1 and self._timePoint:
+            if list(self.experimentalManualFocusScorer.db.execute('select * from manual_focus_scores where well_idx=? and time_point=?', (self._wellIdx, self._timePoint))):
                 list(self.experimentalManualFocusScorer.db.execute(
-                        'update manual_focus_scores set has_bf=?, bf_is_focused=?, focus_stack_len=?, best_focus_stack_idx=? where well_idx=? and time_point="?"',
-                        self._hasBf, self._bfIsFocused, self._focusStackLen, self._bestFocusedStackIdx, self._wellIdx, self._timePoint))
+                    'update manual_focus_scores set has_bf=?, bf_is_focused=?, focus_stack_len=?, best_focus_stack_idx=? where well_idx=? and time_point=?',
+                    (self._hasBf, self._bfIsFocused, self._focusStackLen, self._bestFocusStackIdx, self._wellIdx, self._timePoint)))
             else:
                 list(self.experimentalManualFocusScorer.db.execute(
-                        'insert into manual_focus_scores (has_bf, bf_is_focused, focus_stack_len, best_focus_stack_idx, well_idx, time_point) values (?, ?, ?, ?, ?, ?)',
-                        self._hasBf, self._bfIsFocused, self._focusStackLen, self._bestFocusedStackIdx, self._wellIdx, self._timePoint))
+                    'insert into manual_focus_scores (has_bf, bf_is_focused, focus_stack_len, best_focus_stack_idx, well_idx, time_point) values (?, ?, ?, ?, ?, ?)',
+                    (self._hasBf, self._bfIsFocused, self._focusStackLen, self._bestFocusStackIdx, self._wellIdx, self._timePoint)))
             self.experimentalManualFocusScorer.db.commit()
+
+    @Qt.pyqtSlot()
+    def commitAndAdvance(self):
+        if self._wellIdx != -1 and self._timePoint:
+            try:
+                wellIdxIdx = self.experimentalManualFocusScorer._hatchedWellIdxs.data.index(self._wellIdx)
+            except ValueError:
+                pass
+            else:
+                self.commit()
+                if wellIdxIdx == len(self.experimentalManualFocusScorer._hatchedWellIdxs.data) - 1:
+                    try:
+                        timepointIdx = self.experimentalManualFocusScorer._timePoints.data.index(self._timePoint)
+                    except ValueError:
+                        pass
+                    else:
+                        if timepointIdx < len(self.experimentalManualFocusScorer._timePoints.data) - 1:
+                            self.timepoint = self.experimentalManualFocusScorer._timePoints.data[timepointIdx + 1]
+                            self.wellIdx = self.experimentalManualFocusScorer._hatchedWellIdxs.data[0]
+                else:
+                    self.wellIdx = self.experimentalManualFocusScorer._hatchedWellIdxs.data[wellIdxIdx + 1]
+
+    @Qt.pyqtSlot()
+    def advanceToNextUnscored(self):
+        while True:
+            try:
+                wellIdxIdx = self.experimentalManualFocusScorer._hatchedWellIdxs.data.index(self._wellIdx)
+            except ValueError:
+                return
+            else:
+                if wellIdxIdx == len(self.experimentalManualFocusScorer._hatchedWellIdxs.data) - 1:
+                    try:
+                        timepointIdx = self.experimentalManualFocusScorer._timePoints.data.index(self._timePoint)
+                    except ValueError:
+                        return
+                    else:
+                        if timepointIdx < len(self.experimentalManualFocusScorer._timePoints.data) - 1:
+                            self.timepoint = self.experimentalManualFocusScorer._timePoints.data[timepointIdx + 1]
+                            self.wellIdx = self.experimentalManualFocusScorer._hatchedWellIdxs.data[0]
+                else:
+                    self.wellIdx = self.experimentalManualFocusScorer._hatchedWellIdxs.data[wellIdxIdx + 1]
+            if not list(self.experimentalManualFocusScorer.db.execute('select * from manual_focus_scores where well_idx=? and time_point=?', (self._wellIdx, self._timePoint))):
+                return
+
 
     @Qt.pyqtProperty(bool, notify=hasBfChanged)
     def hasBf(self):
@@ -142,7 +196,6 @@ class ManualFocusScore(Qt.QObject):
     def bfIsFocused(self, v):
         if self._wellIdx != -1 and self._timePoint and v != self._bfIsFocused:
             self._bfIsFocused = v
-            self._store()
             self.bfIsFocusedChanged.emit(self._bfIsFocused)
 
     @Qt.pyqtProperty(int, notify=focusStackLenChanged)
@@ -154,16 +207,16 @@ class ManualFocusScore(Qt.QObject):
             self._focusStackLen = v
             self.focusStackLenChanged.emit(self._focusStackLen)
 
-    @Qt.pyqtProperty(int, notify=bestFocusedStackIdxChanged)
+    @Qt.pyqtProperty(int, notify=bestFocusStackIdxChanged)
     def bestFocusStackIdx(self):
-        return self._bestFocusedStackIdx
+        return self._bestFocusStackIdx
 
     @bestFocusStackIdx.setter
     def bestFocusStackIdx(self, v):
-        if self._wellIdx != -1 and self._timePoint and v != self._bestFocusedStackIdx:
-            self._bestFocusedStackIdx = v
-            self._store()
-            self.bestFocusedStackIdxChanged.emit(self._bestFocusedStackIdx)
+        if self._wellIdx != -1 and self._timePoint and v != self._bestFocusStackIdx:
+            self._bestFocusStackIdx = v
+            self.showCurrentImage()
+            self.bestFocusStackIdxChanged.emit(self._bestFocusStackIdx)
 
 class ExperimentManualFocusScorer(Qt.QQuickItem):
     isValidChanged = Qt.pyqtSignal(bool)
@@ -180,6 +233,61 @@ class ExperimentManualFocusScorer(Qt.QQuickItem):
         self._hatchedWellIdxs = SimpleListModel([])
         self._timePoints = SimpleListModel([])
         self._manualFocusScore = ManualFocusScore(self)
+
+    def _init_actions(self):
+        self.toPrevTimepointAction = Qt.QAction(self.rw)
+        self.toPrevTimepointAction.setShortcut(Qt.Qt.Key_Minus)
+        self.toPrevTimepointAction.setShortcutContext(Qt.Qt.ApplicationShortcut)
+        self.toPrevTimepointAction.triggered.connect(self.toPrevTimepoint)
+        self.rw.addAction(self.toPrevTimepointAction)
+
+        self.toNextTimepointAction = Qt.QAction(self.rw)
+        self.toNextTimepointAction.setShortcut(Qt.Qt.Key_Equal)
+        self.toNextTimepointAction.setShortcutContext(Qt.Qt.ApplicationShortcut)
+        self.toNextTimepointAction.triggered.connect(self.toNextTimepoint)
+        self.rw.addAction(self.toNextTimepointAction)
+
+        self.toPrevWellAction = Qt.QAction(self.rw)
+        self.toPrevWellAction.setShortcut(Qt.Qt.Key_BracketLeft)
+        self.toPrevWellAction.setShortcutContext(Qt.Qt.ApplicationShortcut)
+        self.toPrevWellAction.triggered.connect(self.toPrevWell)
+        self.rw.addAction(self.toPrevWellAction)
+
+        self.toNextWellAction = Qt.QAction(self.rw)
+        self.toNextWellAction.setShortcut(Qt.Qt.Key_BracketRight)
+        self.toNextWellAction.setShortcutContext(Qt.Qt.ApplicationShortcut)
+        self.toNextWellAction.triggered.connect(self.toNextWell)
+        self.rw.addAction(self.toNextWellAction)
+
+        self.uncheckBfFocusedAction = Qt.QAction(self.rw)
+        self.uncheckBfFocusedAction.setShortcut(Qt.Qt.Key_Semicolon)
+        self.uncheckBfFocusedAction.setShortcutContext(Qt.Qt.ApplicationShortcut)
+        self.uncheckBfFocusedAction.triggered.connect(self.uncheckBfFocused)
+        self.rw.addAction(self.uncheckBfFocusedAction)
+
+        self.checkBfFocusedAction = Qt.QAction(self.rw)
+        self.checkBfFocusedAction.setShortcut(Qt.Qt.Key_Apostrophe)
+        self.checkBfFocusedAction.setShortcutContext(Qt.Qt.ApplicationShortcut)
+        self.checkBfFocusedAction.triggered.connect(self.checkBfFocused)
+        self.rw.addAction(self.checkBfFocusedAction)
+
+        self.toPrevFocusStackIdxAction = Qt.QAction(self.rw)
+        self.toPrevFocusStackIdxAction.setShortcut(Qt.Qt.Key_Period)
+        self.toPrevFocusStackIdxAction.setShortcutContext(Qt.Qt.ApplicationShortcut)
+        self.toPrevFocusStackIdxAction.triggered.connect(self.toPrevFocusStackIdx)
+        self.rw.addAction(self.toPrevFocusStackIdxAction)
+
+        self.toNextFocusStackIdxAction = Qt.QAction(self.rw)
+        self.toNextFocusStackIdxAction.setShortcut(Qt.Qt.Key_Slash)
+        self.toNextFocusStackIdxAction.setShortcutContext(Qt.Qt.ApplicationShortcut)
+        self.toNextFocusStackIdxAction.triggered.connect(self.toNextFocusStackIdx)
+        self.rw.addAction(self.toNextFocusStackIdxAction)
+
+        self.commitAndAdvanceAction = Qt.QAction(self.rw)
+        self.commitAndAdvanceAction.setShortcut(Qt.Qt.Key_Backslash)
+        self.commitAndAdvanceAction.setShortcutContext(Qt.Qt.ApplicationShortcut)
+        self.commitAndAdvanceAction.triggered.connect(self.manualFocusScore.commitAndAdvance)
+        self.rw.addAction(self.commitAndAdvanceAction)
 
     @Qt.pyqtProperty(bool, notify=isValidChanged)
     def isValid(self):
@@ -225,6 +333,66 @@ class ExperimentManualFocusScorer(Qt.QQuickItem):
     def timePoints(self):
         return self._timePoints
 
+    @Qt.pyqtSlot()
+    def toPrevTimepoint(self):
+        if self.isValid:
+            try:
+                idx = self._timePoints.data.index(self._manualFocusScore.timepoint)
+            except ValueError:
+                pass
+            else:
+                self._manualFocusScore.timepoint = self._timePoints.data[max(idx-1, 0)]
+
+    @Qt.pyqtSlot()
+    def toNextTimepoint(self):
+        if self.isValid:
+            try:
+                idx = self._timePoints.data.index(self._manualFocusScore.timepoint)
+            except ValueError:
+                pass
+            else:
+                self._manualFocusScore.timepoint = self._timePoints.data[min(idx+1, len(self._timePoints.data)-1)]
+
+    @Qt.pyqtSlot()
+    def toPrevWell(self):
+        if self.isValid:
+            try:
+                idx = self._hatchedWellIdxs.data.index(self._manualFocusScore.wellIdx)
+            except ValueError:
+                pass
+            else:
+                self._manualFocusScore.wellIdx = self._hatchedWellIdxs.data[max(idx-1, 0)]
+
+    @Qt.pyqtSlot()
+    def toNextWell(self):
+        if self.isValid:
+            try:
+                idx = self._hatchedWellIdxs.data.index(self._manualFocusScore.wellIdx)
+            except ValueError:
+                pass
+            else:
+                self._manualFocusScore.wellIdx = self._hatchedWellIdxs.data[min(idx+1, len(self._hatchedWellIdxs.data)-1)]
+
+    @Qt.pyqtSlot()
+    def uncheckBfFocused(self):
+        if self.isValid and self._manualFocusScore.hasBf:
+            self._manualFocusScore.bfIsFocused = False
+
+    @Qt.pyqtSlot()
+    def checkBfFocused(self):
+        if self.isValid and self._manualFocusScore.hasBf:
+            self._manualFocusScore.bfIsFocused = True
+
+    @Qt.pyqtSlot()
+    def toPrevFocusStackIdx(self):
+        if self.isValid and self._manualFocusScore.focusStackLen > 0:
+            self._manualFocusScore.bestFocusStackIdx = max(self._manualFocusScore.bestFocusStackIdx-1, -1)
+
+    @Qt.pyqtSlot()
+    def toNextFocusStackIdx(self):
+        if self.isValid and self._manualFocusScore.focusStackLen > 0:
+            self._manualFocusScore.bestFocusStackIdx = min(self._manualFocusScore.bestFocusStackIdx+1, self._manualFocusScore.focusStackLen-1)
+
 def _register_qml_types():
     Qt.qmlRegisterType(SimpleListModel, 'Analysis', 1, 0, 'SimpleListModel')
     Qt.qmlRegisterType(ManualFocusScore, 'Analysis', 1, 0, 'ManualFocusScore')
@@ -244,6 +412,8 @@ def make_as_rw_dock_widget(rw):
     rw.addDockWidget(Qt.Qt.RightDockWidgetArea, rw.experiment_manual_focus_scorer_dock_widget)
     rw.dock_widget_visibility_toolbar.addAction(rw.experiment_manual_focus_scorer_dock_widget.toggleViewAction())
     rw.experiment_manual_focus_scorer = rw.experiment_manual_focus_scorer_qml_container.rootObject()
+    rw.experiment_manual_focus_scorer.rw = rw
+    rw.experiment_manual_focus_scorer._init_actions()
     Qt.QQmlProperty(rw.experiment_manual_focus_scorer, 'backgroundColor').write(
         Qt.QVariant(Qt.QColor(239, 239, 239)))#Qt.QApplication.instance().palette.color(Qt.QPalette.Window)))
     return rw.experiment_manual_focus_scorer
