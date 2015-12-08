@@ -141,7 +141,7 @@ ExperimentManualFocusScorer {
 
                 Button {
                     enabled: manualFocusScore.hasBf
-                    text: "'"
+                    text: "/"
                     onClicked: toNextFocusStackIdx()
                 }
 
