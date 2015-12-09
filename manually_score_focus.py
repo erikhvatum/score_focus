@@ -136,25 +136,42 @@ class ManualFocusScore(Qt.QObject):
             self.experimentalManualFocusScorer.db.commit()
 
     @Qt.pyqtSlot()
+    def commitAndRetreat(self):
+        if self._wellIdx != -1 and self._timePoint:
+            try:
+                wellIdxIdx = self.experimentalManualFocusScorer._hatchedWellIdxs.data.index(self._wellIdx)
+            except ValueError:
+                return
+            self.commit()
+            if wellIdxIdx == 0:
+                try:
+                    timepointIdx = self.experimentalManualFocusScorer._timePoints.data.index(self._timePoint)
+                except ValueError:
+                    return
+                if timepointIdx > 0:
+                    self.timepoint = self.experimentalManualFocusScorer._timePoints.data[timepointIdx - 1]
+                    self.wellIdx = self.experimentalManualFocusScorer._hatchedWellIdxs.data[-1]
+            else:
+                self.wellIdx = self.experimentalManualFocusScorer._hatchedWellIdxs.data[wellIdxIdx - 1]
+
+    @Qt.pyqtSlot()
     def commitAndAdvance(self):
         if self._wellIdx != -1 and self._timePoint:
             try:
                 wellIdxIdx = self.experimentalManualFocusScorer._hatchedWellIdxs.data.index(self._wellIdx)
             except ValueError:
-                pass
+                return
+            self.commit()
+            if wellIdxIdx == len(self.experimentalManualFocusScorer._hatchedWellIdxs.data) - 1:
+                try:
+                    timepointIdx = self.experimentalManualFocusScorer._timePoints.data.index(self._timePoint)
+                except ValueError:
+                    return
+                if timepointIdx < len(self.experimentalManualFocusScorer._timePoints.data) - 1:
+                    self.timepoint = self.experimentalManualFocusScorer._timePoints.data[timepointIdx + 1]
+                    self.wellIdx = self.experimentalManualFocusScorer._hatchedWellIdxs.data[0]
             else:
-                self.commit()
-                if wellIdxIdx == len(self.experimentalManualFocusScorer._hatchedWellIdxs.data) - 1:
-                    try:
-                        timepointIdx = self.experimentalManualFocusScorer._timePoints.data.index(self._timePoint)
-                    except ValueError:
-                        pass
-                    else:
-                        if timepointIdx < len(self.experimentalManualFocusScorer._timePoints.data) - 1:
-                            self.timepoint = self.experimentalManualFocusScorer._timePoints.data[timepointIdx + 1]
-                            self.wellIdx = self.experimentalManualFocusScorer._hatchedWellIdxs.data[0]
-                else:
-                    self.wellIdx = self.experimentalManualFocusScorer._hatchedWellIdxs.data[wellIdxIdx + 1]
+                self.wellIdx = self.experimentalManualFocusScorer._hatchedWellIdxs.data[wellIdxIdx + 1]
 
     @Qt.pyqtSlot()
     def advanceToNextUnscored(self):
@@ -178,7 +195,6 @@ class ManualFocusScore(Qt.QObject):
                 self.wellIdx = wellIdx
                 self.timepoint = timepoint
                 return
-
 
     @Qt.pyqtProperty(bool, notify=hasBfChanged)
     def hasBf(self):
@@ -283,6 +299,12 @@ class ExperimentManualFocusScorer(Qt.QQuickItem):
         self.toNextFocusStackIdxAction.setShortcutContext(Qt.Qt.ApplicationShortcut)
         self.toNextFocusStackIdxAction.triggered.connect(self.toNextFocusStackIdx)
         self.rw.addAction(self.toNextFocusStackIdxAction)
+
+        self.commitAndRetreatAction = Qt.QAction(self.rw)
+        self.commitAndRetreatAction.setShortcut(Qt.Qt.Key_Backspace)
+        self.commitAndRetreatAction.setShortcutContext(Qt.Qt.ApplicationShortcut)
+        self.commitAndRetreatAction.triggered.connect(self.manualFocusScore.commitAndRetreat)
+        self.rw.addAction(self.commitAndRetreatAction)
 
         self.commitAndAdvanceAction = Qt.QAction(self.rw)
         self.commitAndAdvanceAction.setShortcut(Qt.Qt.Key_Backslash)
@@ -402,7 +424,6 @@ def _register_qml_types():
 def make_as_rw_dock_widget(rw):
     rw.experiment_manual_focus_scorer_dock_widget = Qt.QDockWidget('Experiment Manual Focus Scorer', rw)
     rw.experiment_manual_focus_scorer_qml_container = Qt.QQuickWidget()
-    rw.experiment_manual_focus_scorer_qml_container.resize(300,300)
     rw.experiment_manual_focus_scorer_qml_container.setResizeMode(Qt.QQuickWidget.SizeRootObjectToView)
     rw.experiment_manual_focus_scorer_qml_container.setSource(Qt.QUrl(str(Path(__file__).parent / 'manually_score_focus.qml')))
     rw.experiment_manual_focus_scorer_qml_container.rootContext().setContextProperty("backgroundColor", Qt.QColor(Qt.Qt.red))

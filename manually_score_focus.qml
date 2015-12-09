@@ -88,82 +88,95 @@ ExperimentManualFocusScorer {
             Layout.fillWidth: true
             enabled: isValid
 
-            GridLayout {
-                columns: 5
-                flow: GridLayout.LeftToRight
-                anchors.fill: parent
+            ColumnLayout {
+                anchors.left: parent.left
+                anchors.right: parent.right
 
-                Label {
-                    enabled: manualFocusScore.hasBf
-                    text: "BF is focused: "
+                GridLayout {
+                    columns: 5
+                    flow: GridLayout.LeftToRight
+                    Layout.fillWidth: true
+
+                    Label {
+                        enabled: manualFocusScore.hasBf
+                        text: "BF is focused: "
+                    }
+
+                    CheckBox {
+                        enabled: manualFocusScore.hasBf
+                        checked: manualFocusScore.bfIsFocused
+                        onCheckedChanged: manualFocusScore.bfIsFocused = checked
+                    }
+
+                    Item { Layout.fillWidth: true }
+
+                    Button {
+                        enabled: manualFocusScore.hasBf
+                        text: ";"
+                        onClicked: uncheckBfFocused()
+                    }
+
+                    Button {
+                        enabled: manualFocusScore.hasBf
+                        text: "'"
+                        onClicked: checkBfFocused()
+                    }
+
+                    Label {
+                        enabled: manualFocusScore.focusStackLen > 0
+                        text: "Best stack idx (focused): "
+                    }
+
+                    SpinBox {
+                        enabled: manualFocusScore.focusStackLen > 0
+                        minimumValue: -1
+                        maximumValue: manualFocusScore.focusStackLen - 1
+                        value: manualFocusScore.bestFocusStackIdx
+                        onValueChanged: manualFocusScore.bestFocusStackIdx = value
+                    }
+
+                    Item { Layout.fillWidth: true }
+
+                    Button {
+                        enabled: manualFocusScore.hasBf
+                        text: "."
+                        onClicked: toPrevFocusStackIdx()
+                    }
+
+                    Button {
+                        enabled: manualFocusScore.hasBf
+                        text: "/"
+                        onClicked: toNextFocusStackIdx()
+                    }
                 }
 
-                CheckBox {
-                    enabled: manualFocusScore.hasBf
-                    checked: manualFocusScore.bfIsFocused
-                    onCheckedChanged: manualFocusScore.bfIsFocused = checked
-                }
+                RowLayout {
+                    Button {
+                        text: "Refresh"
+                        onClicked: manualFocusScore.refresh()
+                    }
 
-                Item { Layout.fillWidth: true }
+                    Button {
+                        text: "Commit"
+                        onClicked: manualFocusScore.commit()
+                    }
 
-                Button {
-                    enabled: manualFocusScore.hasBf
-                    text: ";"
-                    onClicked: uncheckBfFocused()
-                }
+                    Button {
+                        text: "Next unscored (no commit)"
+                        onClicked: manualFocusScore.advanceToNextUnscored()
+                    }
 
-                Button {
-                    enabled: manualFocusScore.hasBf
-                    text: "'"
-                    onClicked: checkBfFocused()
-                }
+                    Item { Layout.fillWidth: true }
 
-                Label {
-                    enabled: manualFocusScore.focusStackLen > 0
-                    text: "Best stack idx: "
-                }
+                    Button {
+                        text: "Commit-- ←"
+                        onClicked: manualFocusScore.commitAndRetreat()
+                    }
 
-                SpinBox {
-                    enabled: manualFocusScore.focusStackLen > 0
-                    minimumValue: -1
-                    maximumValue: manualFocusScore.focusStackLen - 1
-                    value: manualFocusScore.bestFocusStackIdx
-                    onValueChanged: manualFocusScore.bestFocusStackIdx = value
-                }
-
-                Item { Layout.fillWidth: true }
-
-                Button {
-                    enabled: manualFocusScore.hasBf
-                    text: "."
-                    onClicked: toPrevFocusStackIdx()
-                }
-
-                Button {
-                    enabled: manualFocusScore.hasBf
-                    text: "/"
-                    onClicked: toNextFocusStackIdx()
-                }
-
-                Button {
-                    text: "Refresh"
-                    onClicked: manualFocusScore.refresh()
-                }
-
-                Button {
-                    text: "Commit"
-                    onClicked: manualFocusScore.commit()
-                }
-
-                Button {
-                    text: "Commit++ \\"
-                    onClicked: manualFocusScore.commitAndAdvance()
-                }
-
-                Button {
-                    text: "Next unscored (no commit)"
-                    onClicked: manualFocusScore.advanceToNextUnscored()
-                    Layout.columnSpan: 5
+                    Button {
+                        text: "Commit++ \\"
+                        onClicked: manualFocusScore.commitAndAdvance()
+                    }
                 }
             }
         }
