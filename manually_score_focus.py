@@ -25,6 +25,7 @@
 import freeimage
 from pathlib import Path
 from PyQt5 import Qt
+import re
 import sqlite3
 
 class SimpleListModel(Qt.QAbstractListModel):
@@ -54,7 +55,7 @@ class ManualFocusScore(Qt.QObject):
         super().__init__()
         self.experimentalManualFocusScorer = experimentalManualFocusScorer
         self._wellIdx = -1
-        self._timePoint = ""
+        self._timepoint = ""
         self._hasBf = False
         self._bfIsFocused = False
         self._focusStackLen = 0
@@ -75,35 +76,71 @@ class ManualFocusScore(Qt.QObject):
             self.wellIdxChanged.emit(self._wellIdx)
 
     def showCurrentImage(self):
-        if self._wellIdx != -1 and self._timePoint:
-            wellDPath = self.experimentalManualFocusScorer._experimentDPath / '{:02}'.format(self._wellIdx)
-            if self._bestFocusStackIdx == -1:
-                imageFPath = wellDPath / '{} bf.png'.format(self._timePoint)
+        def genName(wellIdx, timepoint, focusStackIdx):
+            wellDPath = self.experimentalManualFocusScorer._experimentDPath / '{:02}'.format(wellIdx)
+            if focusStackIdx == -1:
+                return wellDPath / '{} bf.png'.format(timepoint)
             else:
-                imageFPath = wellDPath / '{} focus-{:02}.png'.format(self._timePoint, self._bestFocusStackIdx)
-            rw.image = freeimage.read(str(imageFPath))
+                return wellDPath / '{} focus-{:02}.png'.format(timepoint, focusStackIdx)
+        def parseName(page):
+            m = re.match(str(self.experimentalManualFocusScorer._experimentDPath) + '/(\d+)/([^/]+) (bf|focus-\d\d)\\.png', page.name)
+            if m:
+                return int(m.group(1)), m.group(2), int(m.group(3)[-2:]) if m.group(3)[0] == 'f' else -1
+        if self._wellIdx != -1 and self._timepoint:
+            rw = self.experimentalManualFocusScorer.rw
+            pages = rw.flipbook.pages
+            wells = self.experimentalManualFocusScorer._hatchedWellIdxs.data
+            timepoints = self.experimentalManualFocusScorer._timePoints.data
+            wanted = set()
+            allowed = set()
+            currentTimepointIdx = timepoints.index(self._timepoint)
+            def loadTimepoint(timepointIdx, targetSet):
+                if 0 <= timepointIdx < len(timepoints):
+                    for wellIdx in wells:
+                        for i in range(-1, 6):
+                            if Path(genName(wellIdx, timepoints[timepointIdx], i)).exists():
+                                targetSet.add((wellIdx, timepoints[timepointIdx], i))
+            for timepointIdxDelta in range(-5, 6):
+                s = wanted if abs(timepointIdxDelta) < 3 else allowed
+                loadTimepoint(currentTimepointIdx + timepointIdxDelta, s)
+            targetWtf = self._wellIdx, self._timepoint, self._bestFocusStackIdx
+            targetPageMidx = None
+            for pageIdx in range(len(pages)-1, -1, -1):
+                wtf = parseName(pages[pageIdx])
+                if wtf:
+                    if wtf == targetWtf:
+                        targetPageMidx = Qt.QPersistentModelIndex(rw.flipbook.pages_model.index(pageIdx, 0))
+                    if wtf in wanted:
+                        wanted.remove(wtf)
+                    elif wtf not in allowed:
+                        del pages[pageIdx]
+            for wtf in sorted(list(wanted)):
+                rw.flipbook.add_image_files([genName(*wtf)])
+                if wtf == targetWtf:
+                    targetPageMidx = Qt.QPersistentModelIndex(rw.flipbook.pages_model.index(len(pages)-1, 0))
+            rw.flipbook.focused_page_idx = targetPageMidx.row()
 
     @Qt.pyqtProperty(str)
     def timepoint(self, notify=timepointChanged):
-        return self._timePoint
+        return self._timepoint
 
     @timepoint.setter
     def timepoint(self, timePoint):
-        if self._timePoint != timePoint:
+        if self._timepoint != timePoint:
             if timePoint not in self.experimentalManualFocusScorer._timePoints.data:
                 timePoint = ""
-            self._timePoint = timePoint
+            self._timepoint = timePoint
             self.showCurrentImage()
             self.refresh()
-            self.timepointChanged.emit(self._timePoint)
+            self.timepointChanged.emit(self._timepoint)
 
     @Qt.pyqtSlot()
     def refresh(self):
-        if self._wellIdx != -1 and self._timePoint:
+        if self._wellIdx != -1 and self._timepoint:
             q = list(
                 self.experimentalManualFocusScorer.db.execute(
                     'select has_bf, bf_is_focused, focus_stack_len, best_focus_stack_idx from manual_focus_scores where well_idx=? and time_point=?',
-                    (self._wellIdx, self._timePoint)
+                    (self._wellIdx, self._timepoint)
                 )
             )
             if q:
@@ -113,31 +150,31 @@ class ManualFocusScore(Qt.QObject):
                 self.bestFocusStackIdx = q[0]['best_focus_stack_idx']
             else:
                 wellDPath = self.experimentalManualFocusScorer._experimentDPath / '{:02}'.format(self._wellIdx)
-                self._setHasBf((wellDPath / '{} bf.png'.format(self._timePoint)).exists())
+                self._setHasBf((wellDPath / '{} bf.png'.format(self._timepoint)).exists())
                 self.bfIsFocused = False
-                stackFPaths = sorted(list(wellDPath.glob('{} focus-*.png'.format(self._timePoint))))
+                stackFPaths = sorted(list(wellDPath.glob('{} focus-*.png'.format(self._timepoint))))
                 if stackFPaths:
-                    self._setFocusStackLen(int(str(stackFPaths[-1])[-6:-4]))
+                    self._setFocusStackLen(int(str(stackFPaths[-1])[-6:-4])+1)
                 else:
                     self._setFocusStackLen(0)
                 self.bestFocusStackIdx = -1
 
     @Qt.pyqtSlot()
     def commit(self):
-        if self._wellIdx != -1 and self._timePoint:
-            if list(self.experimentalManualFocusScorer.db.execute('select * from manual_focus_scores where well_idx=? and time_point=?', (self._wellIdx, self._timePoint))):
+        if self._wellIdx != -1 and self._timepoint:
+            if list(self.experimentalManualFocusScorer.db.execute('select * from manual_focus_scores where well_idx=? and time_point=?', (self._wellIdx, self._timepoint))):
                 list(self.experimentalManualFocusScorer.db.execute(
                     'update manual_focus_scores set has_bf=?, bf_is_focused=?, focus_stack_len=?, best_focus_stack_idx=? where well_idx=? and time_point=?',
-                    (self._hasBf, self._bfIsFocused, self._focusStackLen, self._bestFocusStackIdx, self._wellIdx, self._timePoint)))
+                    (self._hasBf, self._bfIsFocused, self._focusStackLen, self._bestFocusStackIdx, self._wellIdx, self._timepoint)))
             else:
                 list(self.experimentalManualFocusScorer.db.execute(
                     'insert into manual_focus_scores (has_bf, bf_is_focused, focus_stack_len, best_focus_stack_idx, well_idx, time_point) values (?, ?, ?, ?, ?, ?)',
-                    (self._hasBf, self._bfIsFocused, self._focusStackLen, self._bestFocusStackIdx, self._wellIdx, self._timePoint)))
+                    (self._hasBf, self._bfIsFocused, self._focusStackLen, self._bestFocusStackIdx, self._wellIdx, self._timepoint)))
             self.experimentalManualFocusScorer.db.commit()
 
     @Qt.pyqtSlot()
     def commitAndRetreat(self):
-        if self._wellIdx != -1 and self._timePoint:
+        if self._wellIdx != -1 and self._timepoint:
             try:
                 wellIdxIdx = self.experimentalManualFocusScorer._hatchedWellIdxs.data.index(self._wellIdx)
             except ValueError:
@@ -145,7 +182,7 @@ class ManualFocusScore(Qt.QObject):
             self.commit()
             if wellIdxIdx == 0:
                 try:
-                    timepointIdx = self.experimentalManualFocusScorer._timePoints.data.index(self._timePoint)
+                    timepointIdx = self.experimentalManualFocusScorer._timePoints.data.index(self._timepoint)
                 except ValueError:
                     return
                 if timepointIdx > 0:
@@ -156,7 +193,7 @@ class ManualFocusScore(Qt.QObject):
 
     @Qt.pyqtSlot()
     def commitAndAdvance(self):
-        if self._wellIdx != -1 and self._timePoint:
+        if self._wellIdx != -1 and self._timepoint:
             try:
                 wellIdxIdx = self.experimentalManualFocusScorer._hatchedWellIdxs.data.index(self._wellIdx)
             except ValueError:
@@ -164,7 +201,7 @@ class ManualFocusScore(Qt.QObject):
             self.commit()
             if wellIdxIdx == len(self.experimentalManualFocusScorer._hatchedWellIdxs.data) - 1:
                 try:
-                    timepointIdx = self.experimentalManualFocusScorer._timePoints.data.index(self._timePoint)
+                    timepointIdx = self.experimentalManualFocusScorer._timePoints.data.index(self._timepoint)
                 except ValueError:
                     return
                 if timepointIdx < len(self.experimentalManualFocusScorer._timePoints.data) - 1:
@@ -177,7 +214,7 @@ class ManualFocusScore(Qt.QObject):
     def advanceToNextUnscored(self):
         try:
             wellIdxIdx = self.experimentalManualFocusScorer._hatchedWellIdxs.data.index(self._wellIdx)
-            timepointIdx = self.experimentalManualFocusScorer._timePoints.data.index(self._timePoint)
+            timepointIdx = self.experimentalManualFocusScorer._timePoints.data.index(self._timepoint)
         except ValueError:
             return
         while True:
@@ -211,7 +248,7 @@ class ManualFocusScore(Qt.QObject):
 
     @bfIsFocused.setter
     def bfIsFocused(self, v):
-        if self._wellIdx != -1 and self._timePoint and v != self._bfIsFocused:
+        if self._wellIdx != -1 and self._timepoint and v != self._bfIsFocused:
             self._bfIsFocused = v
             self.bfIsFocusedChanged.emit(self._bfIsFocused)
 
@@ -230,7 +267,7 @@ class ManualFocusScore(Qt.QObject):
 
     @bestFocusStackIdx.setter
     def bestFocusStackIdx(self, v):
-        if self._wellIdx != -1 and self._timePoint and v != self._bestFocusStackIdx:
+        if self._wellIdx != -1 and self._timepoint and v != self._bestFocusStackIdx:
             self._bestFocusStackIdx = v
             self.showCurrentImage()
             self.bestFocusStackIdxChanged.emit(self._bestFocusStackIdx)
