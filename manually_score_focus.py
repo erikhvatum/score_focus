@@ -145,7 +145,9 @@ class ManualFocusScore(Qt.QObject):
             )
             if q:
                 self._setHasBf(q[0]['has_bf'])
+                was_focused = self.bfIsFocused
                 self.bfIsFocused = q[0]['bf_is_focused']
+                print(was_focused, self.bfIsFocused)
                 self._setFocusStackLen(q[0]['focus_stack_len'])
                 self.bestFocusStackIdx = q[0]['best_focus_stack_idx']
             else:
