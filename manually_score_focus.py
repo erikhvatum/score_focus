@@ -370,7 +370,7 @@ class ExperimentManualFocusScorer(Qt.QQuickItem):
         try:
             db = sqlite3.connect(str(experimentDPath / 'analysis' / 'db.sqlite3'))
             db.row_factory = sqlite3.Row
-            self._hatchedWellIdxs = SimpleListModel([row['well_idx'] for row in db.execute('select well_idx, did_hatch from wells') if row['did_hatch']])
+            self._hatchedWellIdxs = SimpleListModel([row['well_idx'] for row in db.execute('select well_idx from wells where did_hatch=1')]) # and well_idx=14')])
             self._timePoints = SimpleListModel([row['name'] for row in db.execute('select name from time_points')])
             self._experimentDPath = experimentDPath
             self.db = db
