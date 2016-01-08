@@ -38,7 +38,7 @@ def flatfield_correct(im_fpath, ff_fpath, ffc_fpath):
         im = freeimage.read(str(im_fpath))
         ff = freeimage.read(str(ff_fpath))
         ffc = im.astype(numpy.float32) * ff
-        ffc /= numpy.percentile(ffc, 90) * 65535
+        ffc *= 65535.0 / float(numpy.percentile(ffc, 90))
         ffc[ffc < 0] = 0
         ffc[ffc > 65535] = 65535
         freeimage.write(ffc.astype(numpy.uint16), str(ffc_fpath), freeimage.IO_FLAGS.PNG_Z_BEST_SPEED)
