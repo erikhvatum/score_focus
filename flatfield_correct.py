@@ -38,7 +38,7 @@ def flatfield_correct(im_fpath, ff_fpath, ffc_fpath):
         im = freeimage.read(str(im_fpath))
         ff = freeimage.read(str(ff_fpath))
         ffc = im.astype(numpy.float32) * ff
-        ffc *= 65535.0 / float(numpy.percentile(ffc, 90))
+        ffc *= (65535.0 * 0.9) / float(numpy.percentile(ffc, 98))
         ffc[ffc < 0] = 0
         ffc[ffc > 65535] = 65535
         freeimage.write(ffc.astype(numpy.uint16), str(ffc_fpath), freeimage.IO_FLAGS.PNG_Z_BEST_SPEED)
@@ -66,7 +66,7 @@ if __name__=='__main__':
         '--suffixes',
         type=str,
         nargs='+',
-        help='The suffixes of the images that are to be corrected.  ex: "bf" "gfp"',
+        help='The suffixes of the images that are to be corrected, with flatfield reference separated by comma if different.  ex: "bf" "gfp,fl"',
         required=True)
     args = parser.parse_args()
     experiment_dpath = Path(args.experiment_dpath)
@@ -82,7 +82,14 @@ if __name__=='__main__':
         positions = all_positions
     else:
         assert all(p in all_positions for p in positions)
-    suffixes = args.suffixes
+    suffixes = []
+    for suffix in args.suffixes:
+        ss = tuple(s for s in suffix.split(','))
+        assert len(ss) in (1,2)
+        if len(ss) == 1:
+            suffixes.append((ss[0], ss[0]))
+        else:
+            suffixes.append(ss)
     assert "timepoints" in experiment_metadata
     timepoints = experiment_metadata['timepoints']
 
@@ -91,12 +98,12 @@ if __name__=='__main__':
         [
             process_pool.submit(
                 flatfield_correct,
-                experiment_dpath / '{:02}'.format(position) / '{} {}.png'.format(timepoint, suffix),
-                experiment_dpath / 'calibrations' / '{} {}_flatfield.tiff'.format(timepoint, suffix if suffix=='bf' else 'fl'),
-                experiment_dpath / '{:02}'.format(position) / '{} {}_ffc.png'.format(timepoint, suffix))
+                experiment_dpath / '{:02}'.format(position) / '{} {}.png'.format(timepoint, im_suffix),
+                experiment_dpath / 'calibrations' / '{} {}_flatfield.tiff'.format(timepoint, ff_suffix),
+                experiment_dpath / '{:02}'.format(position) / '{} {}_ffc.png'.format(timepoint, im_suffix))
             for timepoint in timepoints
             for position in positions
-            for suffix in suffixes
+            for im_suffix, ff_suffix in suffixes
         ]
 
         for idx, (result, msg) in enumerate(fute.result() for fute in futes):
