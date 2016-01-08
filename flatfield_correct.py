@@ -39,7 +39,7 @@ def flatfield_correct(im_fpath, ff_fpath, ffc_fpath):
         ff = freeimage.read(str(ff_fpath))
         ffc = im.astype(numpy.float32) * ff
         ffc[ffc < 0] = 0
-        ffc[ffc > 0] = 65535
+        ffc[ffc > 65535] = 65535
         freeimage.write(ffc.astype(numpy.uint16), str(ffc_fpath), freeimage.IO_FLAGS.PNG_Z_BEST_SPEED)
     except Exceptions as e:
         return False, 'exception while correcting "{}": {}'.format(str(im_fpath), e)
@@ -91,7 +91,7 @@ if __name__=='__main__':
             process_pool.submit(
                 flatfield_correct,
                 experiment_dpath / '{:02}'.format(position) / '{} {}.png'.format(timepoint, suffix),
-                experiment_dpath / 'calibrations' / '{} {}_flatfield.tiff'.format(timepoint, suffix if suffix=='bf' else 'fl')
+                experiment_dpath / 'calibrations' / '{} {}_flatfield.tiff'.format(timepoint, suffix if suffix=='bf' else 'fl'),
                 experiment_dpath / '{:02}'.format(position) / '{} {}_ffc.png'.format(timepoint, suffix))
             for suffix in suffixes
             for position in positions
