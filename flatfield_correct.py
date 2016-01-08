@@ -98,5 +98,6 @@ if __name__=='__main__':
             for position in positions
             for suffix in suffixes
         ]
-        for result, msg in (fute.result() for fute in futes):
-            print(msg)
+
+        for idx, (result, msg) in enumerate(fute.result() for fute in futes):
+            print('{}% {}'.format(int(1600*(idx+1)/len(futes))/16, msg))
