@@ -42,7 +42,7 @@ def flatfield_correct(im_fpath, ff_fpath, ffc_fpath):
         ffc[ffc < 0] = 0
         ffc[ffc > 65535] = 65535
         freeimage.write(ffc.astype(numpy.uint16), str(ffc_fpath), freeimage.IO_FLAGS.PNG_Z_BEST_SPEED)
-    except Exceptions as e:
+    except Exception as e:
         return False, 'exception while correcting "{}": {}'.format(str(im_fpath), e)
     return True, '{} done'.format(str(im_fpath))
 
