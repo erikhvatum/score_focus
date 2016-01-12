@@ -22,46 +22,61 @@
 #
 # Authors: Willie Zhang, Erik Hvatum <ice.rikh@gmail.com>
 
+from cppmod.cppmod import _cppmod as cppmod
 import freeimage
 import numpy
 from zplib.image import mask as zplib_image_mask
 
 class WzBgs:
-    def __init__(self, temporal_radius):
+    def __init__(self, input_mask=None, temporal_radius=11, threshold_percentile=97.5):
         assert type(temporal_radius) is int and temporal_radius > 0
+        self.input_mask = input_mask
         self.temporal_radius = temporal_radius
+        self.threshold_percentile = threshold_percentile
         self.clear()
 
     def clear(self):
-        self.model_images = []
+        self.image_idx = -1
+        self.model_image_stack = None
         self.model = None
+        self.threshold = None
 
     def updateModel(self, image, mask=None):
-        if self.model_images and image.shape != self.model_images[0].shape:
+        if self.model_image_stack is not None and image.shape != self.model_image_stack.shape[:2]:
             raise ValueError('All query and model images must be of the same dimensions.')
-        if image.dtype.type is numpy.float32:
-            image = image.copy()
-        else:
+        if self.input_mask is not None and image.shape != self.input_mask.shape:
+            raise ValueError('Input mask must be of the same dimensions as query and model images.')
+        if image.dtype.type is not numpy.float32:
             image = image.astype(numpy.float32)
-        if len(self.model_images) < self.temporal_radius:
-            self.model_images.append(image)
-            if len(self.model_images) == self.temporal_radius:
-                self.model = numpy.median(self.model_images, axis=0).astype(numpy.float32)
+        if self.input_mask is None:
+            self.input_mask = image.astype(numpy.uint8)
+            self.input_mask[:] = 255
+        if self.model_image_stack is None:
+            self.model_image_stack = numpy.dstack([image for i in range(self.temporal_radius)])
+        if self.image_idx < self.temporal_radius:
+            self.image_idx += 1
+            self.model_image_stack[..., self.image_idx % self.temporal_radius] = image
+            if self.image_idx == self.temporal_radius:
+                self.model = image.astype(numpy.float32) # Causes image to be copied while preserving stride ordering
+                cppmod.image_stack_median(self.model_image_stack, self.input_mask, self.model)
         else:
+            self.image_idx += 1
             if mask is None:
                 mask = self.queryModelMask(image)
             else:
                 assert mask.shape == image.shape
-            image[mask] = self.model[mask]
-            self.model_images.append(image)
-            del self.model_images[0]
-            self.model = numpy.median(self.model_images, axis=0).astype(numpy.float32)
+            bmask = mask.astype(numpy.bool)
+            image[bmask] = self.model[bmask]
+            self.model_image_stack[..., self.image_idx % self.temporal_radius] = image
+            cppmod.image_stack_median(self.model_image_stack, self.input_mask, self.model)
             return mask
 
     def queryModelDelta(self, image):
         if self.model is None:
             return
-        if self.model_images and image.shape != self.model_images[0].shape:
+        if image.dtype.type is not numpy.float32:
+            image = image.astype(numpy.float32)
+        if image.shape != self.model.shape:
             raise ValueError('All query and model images must be of the same dimensions.')
         return self.model - image
 
@@ -69,20 +84,22 @@ class WzBgs:
         if self.model is None:
             return
         if delta is None:
-            delta = self.queryModelDelta(image)
-        threshold = numpy.percentile(numpy.abs(delta), 97.5).astype(numpy.float32)
+            delta = numpy.abs(self.queryModelDelta(image))
+        threshold = numpy.percentile(delta, self.threshold_percentile).astype(numpy.float32)
         mask = delta >= threshold
         mask[~zplib_image_mask.get_largest_object(mask)] = 0 # Remove dust from mask
         return mask
 
 def processFlipbookPages(pages, temporal_radius=11):
-    wzBgs = WzBgs(temporal_radius)
-    vignette = freeimage.read('/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/non-vignette.png') == 0
+    input_mask = freeimage.read('/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/non-vignette.png')
+    wzBgs = WzBgs(input_mask=input_mask, temporal_radius=temporal_radius)
     ret = []
     try:
         for idx, page in enumerate(pages):
             r = [page[0]]
-            mask = wzBgs.updateModel(page[0].data)
+            image = page[0].data.astype(numpy.float32)
+            image[input_mask==0] = 0
+            mask = wzBgs.updateModel(image)
             if wzBgs.model is not None:
                 r.append(wzBgs.model)
                 if mask is not None:
