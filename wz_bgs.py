@@ -127,6 +127,11 @@ def processFlipbookPages(pages, temporal_radius=11):
         pass
     return ret, wzBgs
 
+def computeFocusMeasures():
+    from rpc_acquisition.scope.device.autofocus import MultiBrenner
+    import sqlite3
+    db = sqlite3.connect('/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/analysis/db.sqlite3')
+
 if __name__ == '__main__':
     import sys
     from PyQt5 import Qt
