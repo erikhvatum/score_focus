@@ -24,24 +24,35 @@
 
 from concurrent import futures
 import freeimage
+import math
 import multiprocessing
 import numpy
+import time
 from zplib.image import mask as zplib_image_mask
 
+from _cppmod import image_stack_median
+
 MAX_WORKERS = multiprocessing.cpu_count()
-pool = futures.ThreadPoolExecutor()
+pool = futures.ThreadPoolExecutor(max_workers=MAX_WORKERS)
 
 class WzBgs:
-    def __init__(self, width, height, temporal_radius):
+    def __init__(self, width, height, temporal_radius, input_mask=None):
         assert all(int(d) == d and d > 0 for d in (width, height, temporal_radius)),\
             "WzBgs.__init__(self, width, height, temporal_radius): "\
             "width, height, temporal_radius must be positive integers"
+        assert input_mask is None or input_mask.shape[0] == width and input_mask.shape[1] == height
         self.context_carousel = numpy.ndarray(
             (width, height, temporal_radius),
             strides=(temporal_radius*4, width*temporal_radius*4, 4),
             dtype=numpy.float32)
+        if input_mask is None:
+            input_mask = numpy.ndarray((width, height), strides=(1, width), dtype=numpy.uint8)
+            input_mask[:] = 255
+        self.input_mask = input_mask
+        self.vert_chunk_len = math.ceil(height / MAX_WORKERS)
+        self.input_mask_strips = [self.input_mask[:, n:min(n+self.vert_chunk_len,height)] for n in range(0, height, self.vert_chunk_len)]
         # self.context_carousel_slices are views into self.context_carousel
-        self.context_carousel_slices = [self.context_carousel[:, n:min(n+MAX_WORKERS,height), :] for n in range(0, height, MAX_WORKERS)]
+        self.context_carousel_slices = [self.context_carousel[:, n:min(n+self.vert_chunk_len,height), :] for n in range(0, height, self.vert_chunk_len)]
         self.clear()
 
     def clear(self):
@@ -58,8 +69,14 @@ class WzBgs:
                 (width, height),
                 strides=(4, width*4),
                 dtype=numpy.float32)
-            self.model_strips = [self.model[:, n:min(n+MAX_WORKERS,height)] for n in range(0, height, MAX_WORKERS)]
-        strip_futes = [pool.submit(numpy.median, slice, axis=2, out=strip) for strip, slice in zip(self.model_strips, self.context_carousel_slices)]
+            self.model_strips = [self.model[:, n:min(n+self.vert_chunk_len,height)] for n in range(0, height, self.vert_chunk_len)]
+#       image_stack_median(self.context_carousel, self.input_mask, self.model)
+        strip_futes = [
+            pool.submit(image_stack_median, slice, input_mask_strip, model_strip)
+            for model_strip, input_mask_strip, slice in zip(self.model_strips, self.input_mask_strips, self.context_carousel_slices)]
+#       strip_futes = [
+#           pool.submit(numpy.median, slice, axis=2, out=model_strip)
+#           for model_strip, input_mask_strip, slice in zip(self.model_strips, self.input_mask_strips, self.context_carousel_slices)]
         for strip_fute in strip_futes:
             strip_fute.result()
 
@@ -109,8 +126,9 @@ class WzBgs:
 def processFlipbookPages(pages, temporal_radius=11):
     if not pages or not pages[0]:
         return [], None
-    wzBgs = WzBgs(pages[0][0].size.width(), pages[0][0].size.height(), temporal_radius)
-    vignette = freeimage.read('/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/non-vignette.png') == 0
+    non_vignette = freeimage.read('/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/non-vignette.png')
+    vignette = non_vignette == 0
+    wzBgs = WzBgs(pages[0][0].size.width(), pages[0][0].size.height(), temporal_radius, non_vignette)
     ret = []
     try:
         for idx, page in enumerate(pages):
@@ -128,3 +146,17 @@ def processFlipbookPages(pages, temporal_radius=11):
         pass
     return ret, wzBgs
 
+if __name__ == '__main__':
+    import sys
+    from PyQt5 import Qt
+    app = Qt.QApplication(sys.argv)
+    from ris_widget.ris_widget import RisWidget
+    rw = RisWidget()
+    rw.show()
+    rw.add_image_files_to_flipbook(('/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-13t1508 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-13t1528 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-13t1548 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-13t1608 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-13t1637 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-13t1704 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-13t1714 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-13t1728 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-13t1748 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-13t1808 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-13t1828 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-13t1848 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-13t1908 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-13t1937 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-13t2004 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-13t2014 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-13t2028 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-13t2048 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-13t2108 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-13t2128 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-13t2148 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-13t2208 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-13t2236 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-13t2304 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-13t2314 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-13t2328 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-13t2348 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0008 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0028 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0048 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0108 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0137 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0204 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0214 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0228 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0248 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0308 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0328 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0348 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0408 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0436 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0504 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0514 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0528 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0548 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0608 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0628 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0648 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0708 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0736 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0804 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0814 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0828 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0848 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0908 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0928 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0948 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t1008 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t1036 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t1104 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t1114 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t1128 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t1148 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t1208 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t1228 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t1248 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t1308 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t1336 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t1404 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t1414 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t1428 bf_ffc.png', '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t1448 bf_ffc.png'))
+    def on_do_button_clicked():
+        processFlipbookPages(rw.flipbook_pages)
+    do_button = Qt.QPushButton('processFlipbookPages')
+    do_button.clicked.connect(on_do_button_clicked)
+    do_button.show()
+    app.exec()
