@@ -108,7 +108,7 @@ class WzBgs:
 
 def processFlipbookPages(pages, temporal_radius=11):
     if not pages or not pages[0]:
-        return []
+        return [], None
     wzBgs = WzBgs(pages[0][0].size.width(), pages[0][0].size.height(), temporal_radius)
     vignette = freeimage.read('/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/non-vignette.png') == 0
     ret = []
@@ -126,5 +126,5 @@ def processFlipbookPages(pages, temporal_radius=11):
             print('{} / {}'.format(idx+1, len(pages)))
     except KeyboardInterrupt:
         pass
-    return ret
+    return ret, wzBgs
 
