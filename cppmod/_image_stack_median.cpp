@@ -24,6 +24,7 @@
 
 #include "_image_stack_median.h"
 #include <algorithm>
+#include <vector>
 
 void reorder_to_inner_outer(const Py_ssize_t* u_shape, const Py_ssize_t* u_strides,
                                   Py_ssize_t* o_shape,       Py_ssize_t* o_strides)
@@ -105,23 +106,22 @@ void _image_stack_median(const npy_float32* image_stack, const Py_ssize_t* _imag
                            mask_shape, mask_strides,
                            _median_shape, _median_strides,
                            median_shape, median_strides);
-    const npy_uint8* image_outer{reinterpret_cast<const npy_uint8*>(image_stack)};
-    const npy_uint8*const image_outer_end{image_outer + image_stack_shape[0] * image_stack_strides[0]};
-    const npy_uint8 *image_inner, *image_inner_end;
     const std::ptrdiff_t image_inner_end_offset = image_stack_shape[1] * image_stack_strides[1];
-    const npy_uint8 *image_layer, *image_layer_end;
     const std::ptrdiff_t image_layer_end_offset = image_stack_shape[2] * image_stack_strides[2];
-    const npy_uint8 *mask_outer{mask}, *mask_inner;
-    npy_uint8 *median_outer{reinterpret_cast<npy_uint8*>(median)}, *median_inner;
-    npy_float32 *pixel_stack{new npy_float32[image_stack_shape[2]]}, *pixel;
-    npy_float32*const median_pixel{pixel_stack + static_cast<std::ptrdiff_t>(image_stack_shape[2] / 2)};
-    npy_float32*const pixel_stack_end{pixel_stack + image_stack_shape[2]};
-    for(;;)
+    const std::ptrdiff_t pixel_stack_median_offset{static_cast<std::ptrdiff_t>(image_stack_shape[2] / 2)};
+    const std::ptrdiff_t outer_idx_count=image_stack_shape[0];
+    #pragma omp parallel for
+    for(std::ptrdiff_t outer_idx=0; outer_idx < outer_idx_count; ++outer_idx)
     {
-        image_inner = image_outer;
-        image_inner_end = image_inner + image_inner_end_offset;
-        mask_inner = mask_outer;
-        median_inner = median_outer;
+        std::vector<npy_float32> pixel_stack_vector(image_stack_shape[2], 0);
+        npy_float32 *pixel_stack{pixel_stack_vector.data()}, *pixel;
+        npy_float32* pixel_stack_end{pixel_stack + image_stack_shape[2]};
+        npy_float32* pixel_stack_median{pixel_stack + pixel_stack_median_offset};
+        const npy_uint8* image_inner{reinterpret_cast<const npy_uint8*>(image_stack) + image_stack_strides[0] * outer_idx};
+        const npy_uint8*const image_inner_end{image_inner + image_inner_end_offset};
+        const npy_uint8* mask_inner{mask + mask_strides[0] * outer_idx};
+        npy_uint8* median_inner{reinterpret_cast<npy_uint8*>(median) + median_strides[0] * outer_idx};
+        const npy_uint8 *image_layer, *image_layer_end;
         for(;;)
         {
             if(*mask_inner != 0)
@@ -136,8 +136,8 @@ void _image_stack_median(const npy_float32* image_stack, const Py_ssize_t* _imag
                     if(image_layer == image_layer_end) break;
                     ++pixel;
                 }
-                std::nth_element(pixel_stack, median_pixel, pixel_stack_end);
-                *reinterpret_cast<npy_float32*>(median_inner) = *median_pixel;
+                std::nth_element(pixel_stack, pixel_stack_median, pixel_stack_end);
+                *reinterpret_cast<npy_float32*>(median_inner) = *pixel_stack_median;
             }
             else
             {
@@ -148,10 +148,5 @@ void _image_stack_median(const npy_float32* image_stack, const Py_ssize_t* _imag
             mask_inner += mask_strides[1];
             median_inner += median_strides[1];
         }
-        image_outer += image_stack_strides[0];
-        if(image_outer == image_outer_end) break;
-        mask_outer += mask_strides[0];
-        median_outer += median_strides[0];
     }
-    delete [] pixel_stack;
 }

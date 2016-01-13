@@ -22,18 +22,13 @@
 #
 # Authors: Erik Hvatum <ice.rikh@gmail.com>, Willie Zhang
 
-from concurrent import futures
 import freeimage
 import math
-import multiprocessing
 import numpy
 import time
 from zplib.image import mask as zplib_image_mask
 
 from _cppmod import image_stack_median
-
-MAX_WORKERS = multiprocessing.cpu_count()
-pool = futures.ThreadPoolExecutor(max_workers=MAX_WORKERS)
 
 class WzBgs:
     def __init__(self, width, height, temporal_radius, input_mask=None):
@@ -49,10 +44,6 @@ class WzBgs:
             input_mask = numpy.ndarray((width, height), strides=(1, width), dtype=numpy.uint8)
             input_mask[:] = 255
         self.input_mask = input_mask
-        self.vert_chunk_len = math.ceil(height / MAX_WORKERS)
-        self.input_mask_strips = [self.input_mask[:, n:min(n+self.vert_chunk_len,height)] for n in range(0, height, self.vert_chunk_len)]
-        # self.context_carousel_slices are views into self.context_carousel
-        self.context_carousel_slices = [self.context_carousel[:, n:min(n+self.vert_chunk_len,height), :] for n in range(0, height, self.vert_chunk_len)]
         self.clear()
 
     def clear(self):
@@ -60,25 +51,15 @@ class WzBgs:
         self.context_idx = 0
         self.next_context_image_idx = 0
         self.model = None
-        self.model_strips = None
 
     def _refresh_model(self):
         width, height = self.context_carousel.shape[:2]
-        if self.model is None or self.model_strips is None:
+        if self.model is None:
             self.model = numpy.ndarray(
                 (width, height),
                 strides=(4, width*4),
                 dtype=numpy.float32)
-            self.model_strips = [self.model[:, n:min(n+self.vert_chunk_len,height)] for n in range(0, height, self.vert_chunk_len)]
-#       image_stack_median(self.context_carousel, self.input_mask, self.model)
-        strip_futes = [
-            pool.submit(image_stack_median, slice, input_mask_strip, model_strip)
-            for model_strip, input_mask_strip, slice in zip(self.model_strips, self.input_mask_strips, self.context_carousel_slices)]
-#       strip_futes = [
-#           pool.submit(numpy.median, slice, axis=2, out=model_strip)
-#           for model_strip, input_mask_strip, slice in zip(self.model_strips, self.input_mask_strips, self.context_carousel_slices)]
-        for strip_fute in strip_futes:
-            strip_fute.result()
+        image_stack_median(self.context_carousel, self.input_mask, self.model)
 
     def updateModel(self, image, mask=None):
         temporal_radius = self.context_carousel.shape[2]

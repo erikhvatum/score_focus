@@ -39,6 +39,7 @@ extra_link_args = []
 if sys.platform != 'win32':
     extra_compile_args.append('-std=c++11')
     extra_compile_args.append('-march=native')
+    extra_compile_args.append('-fopenmp')
 
 try:
     from Cython.Build import cythonize
@@ -67,6 +68,7 @@ _cppmod = distutils.core.Extension(
         'cppmod/_image_stack_median.cpp'],
     depends = ['cppmod/_image_stack_median.h'],
     extra_compile_args = extra_compile_args,
+    extra_link_args = ['-fopenmp'],
     include_dirs = [numpy.get_include()])
 
 distutils.core.setup(
