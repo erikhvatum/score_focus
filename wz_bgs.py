@@ -20,49 +20,71 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 #
-# Authors: Willie Zhang, Erik Hvatum <ice.rikh@gmail.com>
+# Authors: Erik Hvatum <ice.rikh@gmail.com>, Willie Zhang
 
+from concurrent import futures
 import freeimage
+import multiprocessing
 import numpy
 from zplib.image import mask as zplib_image_mask
 
+MAX_WORKERS = multiprocessing.cpu_count()
+pool = futures.ThreadPoolExecutor()
+
+def image_stack_median(image_stack):
+    r = numpy.median(image_stack, axis=2)
+    if r.dtype.type is not numpy.float32:
+        r = r.astype(numpy.float32)
+    return r
+
 class WzBgs:
-    def __init__(self, temporal_radius):
-        assert type(temporal_radius) is int and temporal_radius > 0
-        self.temporal_radius = temporal_radius
+    def __init__(self, width, height, temporal_radius):
+        assert all(int(d) == d and d > 0 for d in (width, height, temporal_radius)),\
+            "WzBgs.__init__(self, width, height, temporal_radius): "\
+            "width, height, temporal_radius must be positive integers"
+        self.context_carrousel = numpy.ndarray(
+            (width, height, temporal_radius),
+            strides=(temporal_radius*4, width*temporal_radius*4, 4),
+            dtype=numpy.float32)
         self.clear()
 
     def clear(self):
-        self.model_images = []
+        self.context_id = 0
+        self.context_idx = 0
+        self.next_context_image_idx = 0
         self.model = None
 
     def updateModel(self, image, mask=None):
-        if self.model_images and image.shape != self.model_images[0].shape:
-            raise ValueError('All query and model images must be of the same dimensions.')
-        if image.dtype.type is numpy.float32:
-            image = image.copy()
-        else:
-            image = image.astype(numpy.float32)
-        if len(self.model_images) < self.temporal_radius:
-            self.model_images.append(image)
-            if len(self.model_images) == self.temporal_radius:
-                self.model = numpy.median(self.model_images, axis=0).astype(numpy.float32)
+        temporal_radius = self.context_carrousel.shape[2]
+        assert image.shape == self.context_carrousel.shape[:2]
+        if self.context_id < temporal_radius:
+            # Insufficient context was available for background model to be constructed.  Therefore, we cannot discern the foregound,
+            # so we simply enter the input into the context.
+            self.context_carrousel[..., self.context_idx] = image
+            self.context_id += 1
+            self.context_idx += 1
+            if self.context_id == temporal_radius:
+                self.context_idx = 0
+                # Entering the current input completed the context, permitting construction of a background model that future calls
+                # will use for foreground discernment.
+                self.model = image_stack_median(self.context_carrousel)
         else:
             if mask is None:
                 mask = self.queryModelMask(image)
-            else:
-                assert mask.shape == image.shape
-            image[mask] = self.model[mask]
-            self.model_images.append(image)
-            del self.model_images[0]
-            self.model = numpy.median(self.model_images, axis=0).astype(numpy.float32)
+            self.context_carrousel[..., self.context_idx] = image
+            # Replace the region identified as the foreground with the corresponding region of the background model
+            self.context_carrousel[..., self.context_idx][mask] = self.model[mask]
+            self.context_id += 1
+            self.context_idx += 1
+            if self.context_idx == temporal_radius:
+                self.context_idx = 0
+            self.model = image_stack_median(self.context_carrousel)
             return mask
 
     def queryModelDelta(self, image):
         if self.model is None:
             return
-        if self.model_images and image.shape != self.model_images[0].shape:
-            raise ValueError('All query and model images must be of the same dimensions.')
+        assert image.shape == self.context_carrousel.shape[:2]
         return self.model - image
 
     def queryModelMask(self, image, delta=None):
@@ -76,13 +98,17 @@ class WzBgs:
         return mask
 
 def processFlipbookPages(pages, temporal_radius=11):
-    wzBgs = WzBgs(temporal_radius)
+    if not pages or not pages[0]:
+        return []
+    wzBgs = WzBgs(pages[0][0].size.width(), pages[0][0].size.height(), temporal_radius)
     vignette = freeimage.read('/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/non-vignette.png') == 0
     ret = []
     try:
         for idx, page in enumerate(pages):
-            r = [page[0]]
-            mask = wzBgs.updateModel(page[0].data)
+            image = page[0].data.astype(numpy.float32)
+            image[vignette] = 0
+            r = [image]
+            mask = wzBgs.updateModel(image)
             if wzBgs.model is not None:
                 r.append(wzBgs.model)
                 if mask is not None:
