@@ -92,11 +92,14 @@ void reorder_to_inner_outer(const Py_ssize_t* u_shape,        const Py_ssize_t* 
         o_slave_shape1[0] = u_slave_shape1[1]; o_slave_shape1[1] = u_slave_shape1[0];
     }
 }
-
+// #include <chrono>
+// #include <iostream>
+// #include <iomanip>
 void _image_stack_median(const npy_float32* image_stack, const Py_ssize_t* _image_stack_shape, const Py_ssize_t* _image_stack_strides,
                          const npy_uint8* mask, const Py_ssize_t* _mask_shape, const Py_ssize_t* _mask_strides,
                          npy_float32* median, const Py_ssize_t* _median_shape, const Py_ssize_t* _median_strides)
 {
+//  std::chrono::high_resolution_clock::time_point t0{std::chrono::high_resolution_clock::now()};
     Py_ssize_t image_stack_shape[3], image_stack_strides[3], mask_shape[2], mask_strides[2], median_shape[2], median_strides[2];
     image_stack_shape[2] = _image_stack_shape[2];
     image_stack_strides[2] = _image_stack_strides[2];
@@ -149,4 +152,7 @@ void _image_stack_median(const npy_float32* image_stack, const Py_ssize_t* _imag
             median_inner += median_strides[1];
         }
     }
+//  std::chrono::high_resolution_clock::time_point t1{std::chrono::high_resolution_clock::now()};
+//  long double milliseconds_elapsed = static_cast<long double>(std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count()) / static_cast<long double>(1e6);
+//  std::cout << milliseconds_elapsed << std::endl;
 }
