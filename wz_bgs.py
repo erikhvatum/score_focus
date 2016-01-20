@@ -192,20 +192,21 @@ class MaskedMultiBrenner(MaskedAutofocusMetric):
     def metric(self, image, measure_mask):
         return self.hp.metric(image, measure_mask), self.bp.metric(image, measure_mask)
 
-DELTAS = []
-MASKS = []
+#DELTAS = []
+#MASKS = []
 
 def _computeFocusMeasures(bgs, im_fpath, measure_mask):
     try:
         im = freeimage.read(str(im_fpath))
+        im[measure_mask] = 0
     except:
         return
     if bgs.model is not None:
         try:
             delta = numpy.abs(bgs.queryModelDelta(im))
             mask = bgs.queryModelMask(im, delta)
-            DELTAS.append(delta)
-            MASKS.append(mask)
+#           DELTAS.append(delta)
+#           MASKS.append(mask)
         except:
             return
         focus_measures = {}
@@ -228,8 +229,8 @@ def computeFocusMeasures(temporal_radius=11):
         position_bgss = {position : WzBgs(2560, 2160, temporal_radius, non_vignette) for position in positions}
         time_points = [row['name'] for row in db.execute('select name from time_points')]
         for time_point in time_points:
-            if time_point == '2015-11-13t1848':
-                return
+#           if time_point == '2015-11-13t1848':
+#               return
             print(time_point)
             for position in positions:
                 print('', position)
@@ -248,7 +249,9 @@ def computeFocusMeasures(temporal_radius=11):
                             v.extend((position, time_point, acquisition_name))
                             list(db.execute(q, v))
                     try:
-                        bgs.updateModel(freeimage.read(str(Path('/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/') / '{:02}'.format(position) / '{} bf_ffc.png'.format(time_point))))
+                        im = freeimage.read(str(Path('/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/') / '{:02}'.format(position) / '{} bf_ffc.png'.format(time_point)))
+                        im[vignette] = 0
+                        bgs.updateModel(im)
                     except:
                         pass
                     db.commit()
