@@ -199,8 +199,7 @@ def _computeFocusMeasures(bgs, im_fpath, measure_mask, compute_measures, write_m
     except:
         return
     if bgs.model is not None:
-#       try:
-        if 1:
+        try:
             # NB: Model and delta are written as float32 tiffs
             if write_models:
                 freeimage.write(
@@ -218,8 +217,8 @@ def _computeFocusMeasures(bgs, im_fpath, measure_mask, compute_measures, write_m
                 freeimage.write(
                     (mask*255).astype(numpy.uint8),
                     str(im_fpath.parent / '{} wz_bgs_model_mask.png'.format(im_fpath.stem)))
-#       except:
-#           return
+        except:
+            return
         if compute_measures:
             focus_measures = {}
             focus_measures['whole_image_hp_brenner_sum_of_squares'], focus_measures['whole_image_bp_brenner_sum_of_squares'] = MultiBrenner((2560, 2160)).metric(im)
@@ -231,6 +230,14 @@ def _computeFocusMeasures(bgs, im_fpath, measure_mask, compute_measures, write_m
             focus_measures['model_mask_region_image_hp_brenner_sum_of_squares'], focus_measures['model_mask_region_image_bp_brenner_sum_of_squares'] = MaskedMultiBrenner((2560,2160)).metric(im, measure_mask)
             return focus_measures
 
+def _readUpdate(bgs, im_fpathstr):
+    try:
+        im = freeimage.read(im_fpathstr)
+        im[vignette] = 0
+        bgs.updateModel(im)
+    except:
+        pass
+
 def computeFocusMeasures(temporal_radius=11, update_db=True, write_models=False, write_deltas=False, write_masks=False):
     from concurrent.futures import ThreadPoolExecutor
     import sqlite3
@@ -238,6 +245,7 @@ def computeFocusMeasures(temporal_radius=11, update_db=True, write_models=False,
     with sqlite3.connect('/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/analysis/db.sqlite3') as db:
         db.row_factory = sqlite3.Row
         pool = ThreadPoolExecutor()
+        futes = []
         busy_thread_count = 0
         busy_thread_count_cv = threading.Condition()
         non_vignette = freeimage.read('/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/non-vignette.png')
@@ -255,7 +263,6 @@ def computeFocusMeasures(temporal_radius=11, update_db=True, write_models=False,
                 if acquisition_names:
                     bgs = position_bgss[position]
                     busy_thread_count = 0
-                    futes = []
                     return_queue = []
                     for acquisition_name in acquisition_names:
                         im_fpath = Path('/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/') / '{:02}'.format(position) / '{} {}_ffc.png'.format(time_point, acquisition_name)
@@ -289,13 +296,18 @@ def computeFocusMeasures(temporal_radius=11, update_db=True, write_models=False,
                                 list(db.execute(q, v))
                             image_idx += 1
                             print('  {:<10} {:%}'.format(acquisition_name, image_idx / image_count))
-                    try:
-                        im = freeimage.read(str(Path('/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/') / '{:02}'.format(position) / '{} bf_ffc.png'.format(time_point)))
-                        im[vignette] = 0
-                        bgs.updateModel(im)
-                    except:
-                        pass
-                    db.commit()
+            db.commit()
+            futes = []
+            for position in positions:
+                acquisition_names = [row['acquisition_name'] for row in db.execute('select acquisition_name from images where well_idx=? and time_point=?', (position, time_point))]
+                if acquisition_names:
+                    futes.append(pool.submit(
+                        _readUpdate,
+                        position_bgss[position],
+                        str(Path('/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/') / '{:02}'.format(position) / '{} bf_ffc.png'.format(time_point))))
+            print(" Updating models...")
+            for fute in futes:
+                fute.result()
                 
 if __name__ == '__main__':
     import sys
