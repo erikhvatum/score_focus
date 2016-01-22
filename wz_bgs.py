@@ -230,24 +230,10 @@ def _computeFocusMeasures(bgs, im_fpath, measure_mask, compute_measures, write_m
             focus_measures['model_mask_region_image_hp_brenner_sum_of_squares'], focus_measures['model_mask_region_image_bp_brenner_sum_of_squares'] = MaskedMultiBrenner((2560,2160)).metric(im, measure_mask)
             return focus_measures
 
-def _readUpdate(bgs, measure_mask, im_fpathstr):
-    try:
-        im = freeimage.read(im_fpathstr)
-    except:
-        return
-    im[measure_mask] = 0
-    bgs.updateModel(im)
-
 def computeFocusMeasures(temporal_radius=11, update_db=True, write_models=False, write_deltas=False, write_masks=False):
-    from concurrent.futures import ThreadPoolExecutor
     import sqlite3
-    import threading
     with sqlite3.connect('/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/analysis/db.sqlite3') as db:
         db.row_factory = sqlite3.Row
-        pool = ThreadPoolExecutor()
-        futes = []
-        busy_thread_count = 0
-        busy_thread_count_cv = threading.Condition()
         non_vignette = freeimage.read('/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/non-vignette.png')
         vignette = non_vignette == 0
         image_count = list(db.execute('select count() from images'))[0]['count()']
@@ -265,50 +251,25 @@ def computeFocusMeasures(temporal_radius=11, update_db=True, write_models=False,
                     busy_thread_count = 0
                     return_queue = []
                     for acquisition_name in acquisition_names:
+                        print(' ', acquisition_name, end='')
                         im_fpath = Path('/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/') / '{:02}'.format(position) / '{} {}_ffc.png'.format(time_point, acquisition_name)
-                        with busy_thread_count_cv:
-                            busy_thread_count += 1
-                        def proc(a, *b):
-                            nonlocal busy_thread_count
-                            r = a, None
-                            try:
-                                r[1] = _computeFocusMeasures(*b)
-                            except:
-                                pass
-                            with busy_thread_count_cv:
-                                busy_thread_count -= 1
-                                return_queue.append(r)
-                                busy_thread_count_cv.notify()
-                        futes.append(pool.submit(proc(
-                            acquisition_name,
-                            bgs, im_fpath, vignette, update_db, write_models, write_deltas, write_masks)))
-                    with busy_thread_count_cv:
-                        while busy_thread_count > 0 or return_queue:
-                            while not return_queue:
-                                busy_thread_count_cv.wait()
-                            acquisition_name, focus_measures = return_queue.pop()
-                            if update_db and focus_measures is not None:
-                                measure_names = sorted(focus_measures.keys())
-                                q = 'update images set ' + ', '.join('{}=?'.format(measure_name) for measure_name in measure_names)
-                                q+= ' where well_idx=? and time_point=? and acquisition_name=?'
-                                v = [float(focus_measures[measure_name]) for measure_name in measure_names]
-                                v.extend((position, time_point, acquisition_name))
-                                list(db.execute(q, v))
-                            image_idx += 1
-                            print('  {:<10} {:%}'.format(acquisition_name, image_idx / image_count))
-            db.commit()
-            futes = []
-            for position in positions:
-                acquisition_names = [row['acquisition_name'] for row in db.execute('select acquisition_name from images where well_idx=? and time_point=?', (position, time_point))]
-                if acquisition_names:
-                    futes.append(pool.submit(
-                        _readUpdate,
-                        position_bgss[position],
-                        vignette,
-                        str(Path('/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/') / '{:02}'.format(position) / '{} bf_ffc.png'.format(time_point))))
-            print(" Updating models...")
-            for fute in futes:
-                fute.result()
+                        focus_measures = _computeFocusMeasures(bgs, im_fpath, vignette, update_db, write_models, write_deltas, write_masks)
+                        if focus_measures is not None:
+                            measure_names = sorted(focus_measures.keys())
+                            q = 'update images set ' + ', '.join('{}=?'.format(measure_name) for measure_name in measure_names)
+                            q+= ' where well_idx=? and time_point=? and acquisition_name=?'
+                            v = [float(focus_measures[measure_name]) for measure_name in measure_names]
+                            v.extend((position, time_point, acquisition_name))
+                            list(db.execute(q, v))
+                        image_idx += 1
+                        print('  {:<10} {:%}'.format(acquisition_name, image_idx / image_count))
+                    try:
+                        im = freeimage.read(str(Path('/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/') / '{:02}'.format(position) / '{} bf_ffc.png'.format(time_point)))
+                        im[vignette] = 0
+                        bgs.updateModel(im)
+                    except:
+                        pass
+                    db.commit()
                 
 if __name__ == '__main__':
     import sys
