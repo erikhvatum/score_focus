@@ -251,7 +251,6 @@ def computeFocusMeasures(temporal_radius=11, update_db=True, write_models=False,
                     busy_thread_count = 0
                     return_queue = []
                     for acquisition_name in acquisition_names:
-                        print(' ', acquisition_name, end='')
                         im_fpath = Path('/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/') / '{:02}'.format(position) / '{} {}_ffc.png'.format(time_point, acquisition_name)
                         focus_measures = _computeFocusMeasures(bgs, im_fpath, vignette, update_db, write_models, write_deltas, write_masks)
                         if focus_measures is not None:
