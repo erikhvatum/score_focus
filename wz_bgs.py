@@ -230,13 +230,13 @@ def _computeFocusMeasures(bgs, im_fpath, measure_mask, compute_measures, write_m
             focus_measures['model_mask_region_image_hp_brenner_sum_of_squares'], focus_measures['model_mask_region_image_bp_brenner_sum_of_squares'] = MaskedMultiBrenner((2560,2160)).metric(im, measure_mask)
             return focus_measures
 
-def _readUpdate(bgs, im_fpathstr):
+def _readUpdate(bgs, measure_mask, im_fpathstr):
     try:
         im = freeimage.read(im_fpathstr)
-        im[vignette] = 0
-        bgs.updateModel(im)
     except:
-        pass
+        return
+    im[measure_mask] = 0
+    bgs.updateModel(im)
 
 def computeFocusMeasures(temporal_radius=11, update_db=True, write_models=False, write_deltas=False, write_masks=False):
     from concurrent.futures import ThreadPoolExecutor
@@ -304,6 +304,7 @@ def computeFocusMeasures(temporal_radius=11, update_db=True, write_models=False,
                     futes.append(pool.submit(
                         _readUpdate,
                         position_bgss[position],
+                        vignette,
                         str(Path('/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/') / '{:02}'.format(position) / '{} bf_ffc.png'.format(time_point))))
             print(" Updating models...")
             for fute in futes:
