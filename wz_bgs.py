@@ -273,10 +273,27 @@ def computeFocusMeasures(temporal_radius=11, update_db=True, write_models=False,
                         pass
                     db.commit()
 
-def plotMeasure(measure_name):
-    with sqlite3.connect(str(DPATH / 'analysis/db.sqlite3')) as db:
-        for time_point, well_idx in db.execute('select time_point, well_idx from (select time_point, well_idx, sum(is_focused) as sif from images group by time_point, well_idx) where sif > 0'):
-            print(time_point, well_idx)
+def computeFocusMeasureBestVsFocusedIdxDeltas():
+    db = sqlite3.connect(str(DPATH / 'analysis/db.sqlite3'))
+    measure_names = [d[0] for d in db.execute('select * from images').description][5:]
+    time_point_well_idxs = list(db.execute(
+        'select time_point, well_idx from ('
+	    '   select time_point, well_idx, sum(is_focused) as sif from images where acquisition_name!="bf" group by time_point, well_idx'
+        ') where sif == 1'))
+    ret = []
+    for time_point, well_idx in time_point_well_idxs:
+        print(time_point, well_idx)
+        for measure_name in measure_names:
+            rows = list(db.execute('select is_focused, {} from images where time_point=? and well_idx=? and acquisition_name!="bf" order by acquisition_name'.format(measure_name), (time_point, well_idx)))
+            if all(row[1] is not None for row in rows):
+                # print(measure_name, time_point, well_idx, numpy.argmin([v[1] for v in rows]), numpy.argmax([v[0] for v in rows]))
+                focused_idx = int(numpy.argmax([row[0] for row in rows]))
+                measure_min_idx = int(numpy.argmin([row[1] for row in rows]))
+                measure_max_idx = int(numpy.argmax([row[1] for row in rows]))
+                if list(db.execute('select count() from focus_measure_vs_manual_idx_deltas where time_point=? and well_idx=?', (time_point, well_idx)))[0][0] == 0:
+                    list(db.execute('insert into focus_measure_vs_manual_idx_deltas (time_point, well_idx) values(?, ?)', (time_point, well_idx)))
+                list(db.execute('update focus_measure_vs_manual_idx_deltas set {0}_min=?, {0}_max=? where time_point=? and well_idx=?'.format(measure_name), (measure_min_idx, measure_max_idx, time_point, well_idx)))
+    db.commit()
 
 if __name__ == '__main__':
     import sys
