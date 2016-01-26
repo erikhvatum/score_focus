@@ -23,13 +23,19 @@
 # Authors: Erik Hvatum <ice.rikh@gmail.com>, Willie Zhang
 
 import freeimage
-import math
 import numpy
 from pathlib import Path
+import sqlite3
+import sys
 import time
 from zplib.image import mask as zplib_image_mask
 
 from _cppmod import image_stack_median
+
+DPATHSTR = {
+    'darwin' : '/Volumes/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3'
+}.get(sys.platform, '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3')
+DPATH = Path(DPATHSTR)
 
 class WzBgs:
     def __init__(self, width, height, temporal_radius, input_mask=None):
@@ -109,7 +115,7 @@ class WzBgs:
 def processFlipbookPages(pages, temporal_radius=11):
     if not pages or not pages[0]:
         return [], None
-    non_vignette = freeimage.read('/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/non-vignette.png')
+    non_vignette = freeimage.read(str(DPATH / 'non-vignette.png'))
     vignette = non_vignette == 0
     wzBgs = WzBgs(pages[0][0].size.width(), pages[0][0].size.height(), temporal_radius, non_vignette)
     ret = []
@@ -231,10 +237,9 @@ def _computeFocusMeasures(bgs, im_fpath, measure_mask, compute_measures, write_m
             return focus_measures
 
 def computeFocusMeasures(temporal_radius=11, update_db=True, write_models=False, write_deltas=False, write_masks=False):
-    import sqlite3
-    with sqlite3.connect('/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/analysis/db.sqlite3') as db:
+    with sqlite3.connect(str(DPATH / 'analysis/db.sqlite3')) as db:
         db.row_factory = sqlite3.Row
-        non_vignette = freeimage.read('/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/non-vignette.png')
+        non_vignette = freeimage.read(str(DPATH / 'non-vignette.png'))
         vignette = non_vignette == 0
         image_count = list(db.execute('select count() from images'))[0]['count()']
         positions = [row['well_idx'] for row in db.execute('select well_idx from wells where did_hatch')]
@@ -248,10 +253,8 @@ def computeFocusMeasures(temporal_radius=11, update_db=True, write_models=False,
                 acquisition_names = [row['acquisition_name'] for row in db.execute('select acquisition_name from images where well_idx=? and time_point=?', (position, time_point))]
                 if acquisition_names:
                     bgs = position_bgss[position]
-                    busy_thread_count = 0
-                    return_queue = []
                     for acquisition_name in acquisition_names:
-                        im_fpath = Path('/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/') / '{:02}'.format(position) / '{} {}_ffc.png'.format(time_point, acquisition_name)
+                        im_fpath = DPATH / '{:02}'.format(position) / '{} {}_ffc.png'.format(time_point, acquisition_name)
                         focus_measures = _computeFocusMeasures(bgs, im_fpath, vignette, update_db, write_models, write_deltas, write_masks)
                         if focus_measures is not None:
                             measure_names = sorted(focus_measures.keys())
@@ -263,13 +266,18 @@ def computeFocusMeasures(temporal_radius=11, update_db=True, write_models=False,
                         image_idx += 1
                         print('  {:<10} {:%}'.format(acquisition_name, image_idx / image_count))
                     try:
-                        im = freeimage.read(str(Path('/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/') / '{:02}'.format(position) / '{} bf_ffc.png'.format(time_point)))
+                        im = freeimage.read(str(DPATH / '{:02}'.format(position) / '{} bf_ffc.png'.format(time_point)))
                         im[vignette] = 0
                         bgs.updateModel(im)
                     except:
                         pass
                     db.commit()
-                
+
+def plotMeasure(measure_name):
+    with sqlite3.connect(str(DPATH / 'analysis/db.sqlite3')) as db:
+        for time_point, well_idx in db.execute('select time_point, well_idx from (select time_point, well_idx, sum(is_focused) as sif from images group by time_point, well_idx) where sif > 0'):
+            print(time_point, well_idx)
+
 if __name__ == '__main__':
     import sys
     from PyQt5 import Qt
