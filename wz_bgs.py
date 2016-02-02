@@ -22,6 +22,7 @@
 #
 # Authors: Erik Hvatum <ice.rikh@gmail.com>, Willie Zhang
 
+from concurrent.futures import ThreadPoolExecutor
 import freeimage
 import numpy
 from pathlib import Path
@@ -239,6 +240,11 @@ def _computeFocusMeasures(bgs, im_fpath, measure_mask, compute_measures, write_m
             focus_measures['model_mask_region_image_hp_brenner_sum_of_squares'], focus_measures['model_mask_region_image_bp_brenner_sum_of_squares'] = MaskedMultiBrenner((2560,2160)).metric(im, mask)
             return focus_measures
 
+pool = ThreadPoolExecutor()
+
+def _computeFocusMeasuresWorkerFunction(acquisition_name, bgs, im_fpath, non_vignette, update_db, write_models, write_deltas, write_masks):
+    return acquisition_name, _computeFocusMeasures(bgs, im_fpath, non_vignette, update_db, write_models, write_deltas, write_masks)
+
 def computeFocusMeasures(temporal_radius=11, update_db=True, write_models=False, write_deltas=False, write_masks=False):
     with sqlite3.connect(str(DPATH / 'analysis/db.sqlite3')) as db:
         db.row_factory = sqlite3.Row
@@ -256,9 +262,12 @@ def computeFocusMeasures(temporal_radius=11, update_db=True, write_models=False,
                 acquisition_names = [row['acquisition_name'] for row in db.execute('select acquisition_name from images where well_idx=? and time_point=?', (position, time_point))]
                 if acquisition_names:
                     bgs = position_bgss[position]
+                    tasks = []
                     for acquisition_name in acquisition_names:
                         im_fpath = DPATH / '{:02}'.format(position) / '{} {}_ffc.png'.format(time_point, acquisition_name)
-                        focus_measures = _computeFocusMeasures(bgs, im_fpath, non_vignette, update_db, write_models, write_deltas, write_masks)
+                        tasks.append(pool.submit(_computeFocusMeasuresWorkerFunction, acquisition_name, bgs, im_fpath, non_vignette, update_db, write_models, write_deltas, write_masks))
+                    for task in tasks:
+                        acquisition_name, focus_measures = task.result()
                         if focus_measures is not None:
                             measure_names = sorted(focus_measures.keys())
                             q = 'update images set ' + ', '.join('{}=?'.format(measure_name) for measure_name in measure_names)
