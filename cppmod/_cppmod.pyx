@@ -30,11 +30,30 @@ import numpy
 cdef extern from "_image_stack_median.h":
     void _image_stack_median(
         const numpy.float32_t* image_stack, const Py_ssize_t* image_stack_shape, const Py_ssize_t* image_stack_strides,
+        numpy.float32_t* median, const Py_ssize_t* median_shape, const Py_ssize_t* median_strides) nogil
+    void _image_stack_median(
+        const numpy.float32_t* image_stack, const Py_ssize_t* image_stack_shape, const Py_ssize_t* image_stack_strides,
         const numpy.uint8_t* mask, const Py_ssize_t* mask_shape, const Py_ssize_t* mask_strides,
         numpy.float32_t* median, const Py_ssize_t* median_shape, const Py_ssize_t* median_strides) nogil
 
 @cython.boundscheck(False)
-cpdef image_stack_median(numpy.float32_t[:, :, :] image_stack, numpy.uint8_t[:, :] mask, numpy.float32_t[:, :] median):
+cpdef image_stack_median(numpy.float32_t[:, :, :] image_stack, numpy.float32_t[:, :] median):
+    if image_stack.strides[2] > image_stack.strides[0] or image_stack.strides[2] > image_stack.strides[1]:
+        raise ValueError('image_stack axis 2 must be depth')
+    if image_stack.shape[2] % 2 == 0:
+        raise ValueError('image_stack depth (axis 2) must be odd')
+    order = image_stack.strides[0] < image_stack.strides[1]
+    if order != (median.strides[0] < median.strides[1]):
+        raise ValueError('image_stack width and height stride ordering must be the same as median.')
+    if (image_stack.shape[0], image_stack.shape[1]) != (median.shape[0], median.shape[1]):
+        raise ValueError('image_stack width and height must be the same as median.')
+    with nogil:
+        _image_stack_median(
+            &image_stack[0][0][0], &image_stack.shape[0], &image_stack.strides[0],
+            &median[0][0], &median.shape[0], &median.strides[0])
+
+@cython.boundscheck(False)
+cpdef image_stack_masked_median(numpy.float32_t[:, :, :] image_stack, numpy.uint8_t[:, :] mask, numpy.float32_t[:, :] median):
     if image_stack.strides[2] > image_stack.strides[0] or image_stack.strides[2] > image_stack.strides[1]:
         raise ValueError('image_stack axis 2 must be depth')
     if image_stack.shape[2] % 2 == 0:

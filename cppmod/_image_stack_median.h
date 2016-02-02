@@ -53,5 +53,8 @@ void reorder_to_inner_outer(const Py_ssize_t* u_shape,        const Py_ssize_t* 
                                   Py_ssize_t* o_slave_shape1,       Py_ssize_t* o_slave_strides1);
 
 void _image_stack_median(const npy_float32* image_stack, const Py_ssize_t* image_stack_shape, const Py_ssize_t* image_stack_strides,
+                         npy_float32* median, const Py_ssize_t* median_shape, const Py_ssize_t* median_strides);
+
+void _image_stack_median(const npy_float32* image_stack, const Py_ssize_t* image_stack_shape, const Py_ssize_t* image_stack_strides,
                          const npy_uint8* mask, const Py_ssize_t* mask_shape, const Py_ssize_t* mask_strides,
                          npy_float32* median, const Py_ssize_t* median_shape, const Py_ssize_t* median_strides);

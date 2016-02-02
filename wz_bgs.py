@@ -48,9 +48,9 @@ class WzBgs:
             strides=(temporal_radius*4, width*temporal_radius*4, 4),
             dtype=numpy.float32)
         if input_mask is None:
-            input_mask = numpy.ndarray((width, height), strides=(1, width), dtype=numpy.uint8)
-            input_mask[:] = 255
-        self.input_mask = input_mask
+            self.input_antimask = None
+        else:
+            self.input_antimask = input_mask == 0
         self.clear()
 
     def clear(self):
@@ -66,7 +66,7 @@ class WzBgs:
                 (width, height),
                 strides=(4, width*4),
                 dtype=numpy.float32)
-        image_stack_median(self.context_carousel, self.input_mask, self.model)
+        image_stack_median(self.context_carousel, self.model)
 
     def updateModel(self, image, mask=None):
         temporal_radius = self.context_carousel.shape[2]
@@ -104,8 +104,9 @@ class WzBgs:
     def queryModelMask(self, image, delta=None):
         if self.model is None:
             return
-        if delta is None:
-            delta = self.queryModelDelta(image)
+        delta = self.queryModelDelta(image) if delta is None else delta.astype(numpy.float32)
+        if self.input_antimask is not None:
+            delta[self.input_antimask] = 0
         threshold = numpy.percentile(numpy.abs(delta), 97.5).astype(numpy.float32)
         mask = delta >= threshold
         mask = zplib_image_mask.get_largest_object(mask)
@@ -161,14 +162,15 @@ class MaskedAutofocusMetric:
 
 class MaskedBrenner(MaskedAutofocusMetric):
     def metric(self, image, mask):
+        antimask = mask == 0
         image = image.astype(numpy.float32) # otherwise can get overflow in the squaring and summation
         # Exclude unmasked regions from edge detection output lest the masked region's border register as a large, spurious edge that may
         # dominate the measure and make it a measure of mask region border length rather than information density within the masked region
         # (depending on image content and spatial filter preprocessing).
         x_diffs = (image[2:, :] - image[:-2, :])**2
-        x_diffs[mask[:2558,:]] = 0
+        x_diffs[antimask[:2558,:]] = 0
         y_diffs = (image[:, 2:] - image[:, :-2])**2
-        y_diffs[mask[:,:2158]] = 0
+        y_diffs[antimask[:,:2158]] = 0
         return x_diffs.sum() + y_diffs.sum()
 
 class MaskedFilteredBrenner(MaskedBrenner):
@@ -179,9 +181,9 @@ class MaskedFilteredBrenner(MaskedBrenner):
         if time.time() - t0 > 0.5:
             fast_fft.store_plan_hints(FFTW_WISDOM)
 
-    def metric(self, image, measure_mask):
+    def metric(self, image, mask):
         filtered = self.filter.filter(image)
-        return super().metric(filtered, measure_mask)
+        return super().metric(filtered, mask)
 
 class MaskedHighpassBrenner(MaskedFilteredBrenner):
     PERIOD_RANGE = (None, 10)
@@ -195,18 +197,17 @@ class MaskedMultiBrenner(MaskedAutofocusMetric):
         self.hp = MaskedHighpassBrenner(shape)
         self.bp = MaskedBandpassBrenner(shape)
 
-    def metric(self, image, measure_mask):
-        return self.hp.metric(image, measure_mask), self.bp.metric(image, measure_mask)
+    def metric(self, image, mask):
+        return self.hp.metric(image, mask), self.bp.metric(image, mask)
 
 def _computeFocusMeasures(bgs, im_fpath, measure_mask, compute_measures, write_models, write_deltas, write_masks):
     try:
         im = freeimage.read(str(im_fpath))
-        im[measure_mask] = 0
     except:
         return
     if bgs.model is not None:
+        # NB: Model and delta are written as float32 tiffs
         try:
-            # NB: Model and delta are written as float32 tiffs
             if write_models:
                 freeimage.write(
                     bgs.model,
@@ -219,6 +220,7 @@ def _computeFocusMeasures(bgs, im_fpath, measure_mask, compute_measures, write_m
                     str(im_fpath.parent / '{} wz_bgs_model_delta.tiff'.format(im_fpath.stem)),
                     freeimage.IO_FLAGS.TIFF_DEFLATE)
             mask = bgs.queryModelMask(im, delta)
+            antimask = mask == 0
             if write_masks:
                 freeimage.write(
                     (mask*255).astype(numpy.uint8),
@@ -227,19 +229,20 @@ def _computeFocusMeasures(bgs, im_fpath, measure_mask, compute_measures, write_m
             return
         if compute_measures:
             focus_measures = {}
-            focus_measures['whole_image_hp_brenner_sum_of_squares'], focus_measures['whole_image_bp_brenner_sum_of_squares'] = MultiBrenner((2560, 2160)).metric(im)
+            focus_measures['whole_image_hp_brenner_sum_of_squares'], focus_measures['whole_image_bp_brenner_sum_of_squares'] = MaskedMultiBrenner((2560, 2160)).metric(im, measure_mask)
             model_delta_squares = delta.astype(numpy.float64)**2
+            model_delta_squares[~measure_mask] = 0
             focus_measures['model_delta_sum_of_squares'] = model_delta_squares.sum()
             focus_measures['model_mask_count'] = mask.sum()
-            model_delta_squares[measure_mask] = 0
+            model_delta_squares[antimask] = 0
             focus_measures['model_mask_region_delta_sum_of_squares'] = model_delta_squares.sum()
-            focus_measures['model_mask_region_image_hp_brenner_sum_of_squares'], focus_measures['model_mask_region_image_bp_brenner_sum_of_squares'] = MaskedMultiBrenner((2560,2160)).metric(im, measure_mask)
+            focus_measures['model_mask_region_image_hp_brenner_sum_of_squares'], focus_measures['model_mask_region_image_bp_brenner_sum_of_squares'] = MaskedMultiBrenner((2560,2160)).metric(im, mask)
             return focus_measures
 
 def computeFocusMeasures(temporal_radius=11, update_db=True, write_models=False, write_deltas=False, write_masks=False):
     with sqlite3.connect(str(DPATH / 'analysis/db.sqlite3')) as db:
         db.row_factory = sqlite3.Row
-        non_vignette = freeimage.read(str(DPATH / 'non-vignette.png'))
+        non_vignette = freeimage.read(str(DPATH / 'non-vignette.png')) != 0
         vignette = non_vignette == 0
         image_count = list(db.execute('select count() from images'))[0]['count()']
         positions = [row['well_idx'] for row in db.execute('select well_idx from wells where did_hatch')]
@@ -255,7 +258,7 @@ def computeFocusMeasures(temporal_radius=11, update_db=True, write_models=False,
                     bgs = position_bgss[position]
                     for acquisition_name in acquisition_names:
                         im_fpath = DPATH / '{:02}'.format(position) / '{} {}_ffc.png'.format(time_point, acquisition_name)
-                        focus_measures = _computeFocusMeasures(bgs, im_fpath, vignette, update_db, write_models, write_deltas, write_masks)
+                        focus_measures = _computeFocusMeasures(bgs, im_fpath, non_vignette, update_db, write_models, write_deltas, write_masks)
                         if focus_measures is not None:
                             measure_names = sorted(focus_measures.keys())
                             q = 'update images set ' + ', '.join('{}=?'.format(measure_name) for measure_name in measure_names)
@@ -267,7 +270,6 @@ def computeFocusMeasures(temporal_radius=11, update_db=True, write_models=False,
                         print('  {:<10} {:%}'.format(acquisition_name, image_idx / image_count))
                     try:
                         im = freeimage.read(str(DPATH / '{:02}'.format(position) / '{} bf_ffc.png'.format(time_point)))
-                        im[vignette] = 0
                         bgs.updateModel(im)
                     except:
                         pass
@@ -289,10 +291,12 @@ def computeFocusMeasureBestVsFocusedIdxDeltas():
                 # print(measure_name, time_point, well_idx, numpy.argmin([v[1] for v in rows]), numpy.argmax([v[0] for v in rows]))
                 focused_idx = int(numpy.argmax([row[0] for row in rows]))
                 measure_min_idx = int(numpy.argmin([row[1] for row in rows]))
+                measure_min_idx_delta = abs(focused_idx - measure_min_idx)
                 measure_max_idx = int(numpy.argmax([row[1] for row in rows]))
+                measure_max_idx_delta = abs(focused_idx - measure_max_idx)
                 if list(db.execute('select count() from focus_measure_vs_manual_idx_deltas where time_point=? and well_idx=?', (time_point, well_idx)))[0][0] == 0:
                     list(db.execute('insert into focus_measure_vs_manual_idx_deltas (time_point, well_idx) values(?, ?)', (time_point, well_idx)))
-                list(db.execute('update focus_measure_vs_manual_idx_deltas set {0}_min=?, {0}_max=? where time_point=? and well_idx=?'.format(measure_name), (measure_min_idx, measure_max_idx, time_point, well_idx)))
+                list(db.execute('update focus_measure_vs_manual_idx_deltas set {0}_min=?, {0}_max=? where time_point=? and well_idx=?'.format(measure_name), (measure_min_idx_delta, measure_max_idx_delta, time_point, well_idx)))
     db.commit()
 
 if __name__ == '__main__':
