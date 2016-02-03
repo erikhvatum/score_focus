@@ -305,17 +305,24 @@ def computeFocusMeasureBestVsFocusedIdxDeltas():
                 list(db.execute('update focus_measure_vs_manual_idx_deltas set {0}_min=?, {0}_max=? where time_point=? and well_idx=?'.format(measure_name), (measure_min_idx_delta, measure_max_idx_delta, time_point, well_idx)))
     db.commit()
 
-def makeFocusMeasureBestVsFocusedIdxDeltaHistograms(image_out_fpath=None):
+def makeFocusMeasureBestVsFocusedIdxDeltaHistograms():
     import matplotlib.pyplot as plt
     db = sqlite3.connect(str(DPATH / 'analysis/db.sqlite3'))
-    measure_names = [d[0] for d in db.execute('select * from images').description][5:]
-    if image_out_fpath is None:
-        plt.ion()
-        fig = plt.figure()
-        fig_idx = fig.number
-    else:
-        raise NotImplementedError()
-
+    dbq = db.execute('select * from focus_measure_vs_manual_idx_deltas')
+    measure_names = [dbqd[0] for dbqd in dbq.description][2:]
+    data = numpy.array(list(dbqr[2:] for dbqr in dbq))
+    plt.ion()
+    fig = plt.figure()
+    fig_idx = fig.number
+    fig_rowcount = 2
+    fig_colcount = len(measure_names) / fig_rowcount
+    for measure_idx in range(len(measure_names)):
+        plt.subplot(fig_rowcount, fig_colcount, measure_idx+1)
+        plt.hist(data[:, measure_idx], bins=5)
+        label = measure_names[measure_idx]
+        # if len(xlabel) > 20:
+        #     xlabel = xlabel[:20] + '\n' + xlabel[20:]
+        plt.ylabel(label)
 
 if __name__ == '__main__':
     import sys
