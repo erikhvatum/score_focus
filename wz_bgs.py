@@ -24,6 +24,7 @@
 
 from concurrent.futures import ThreadPoolExecutor
 import freeimage
+import math
 import numpy
 from pathlib import Path
 import sqlite3
@@ -137,7 +138,6 @@ def processFlipbookPages(pages, temporal_radius=11):
         pass
     return ret, wzBgs
 
-from rpc_acquisition.scope.device.autofocus import MultiBrenner
 import os.path
 from zplib.image import fast_fft
 
@@ -242,9 +242,6 @@ def _computeFocusMeasures(bgs, im_fpath, measure_mask, compute_measures, write_m
 
 pool = ThreadPoolExecutor()
 
-def _computeFocusMeasuresWorkerFunction(acquisition_name, bgs, im_fpath, non_vignette, update_db, write_models, write_deltas, write_masks):
-    return acquisition_name, _computeFocusMeasures(bgs, im_fpath, non_vignette, update_db, write_models, write_deltas, write_masks)
-
 def computeFocusMeasures(temporal_radius=11, update_db=True, write_models=False, write_deltas=False, write_masks=False):
     with sqlite3.connect(str(DPATH / 'analysis/db.sqlite3')) as db:
         db.row_factory = sqlite3.Row
@@ -265,7 +262,7 @@ def computeFocusMeasures(temporal_radius=11, update_db=True, write_models=False,
                     tasks = []
                     for acquisition_name in acquisition_names:
                         im_fpath = DPATH / '{:02}'.format(position) / '{} {}_ffc.png'.format(time_point, acquisition_name)
-                        tasks.append(pool.submit(_computeFocusMeasuresWorkerFunction, acquisition_name, bgs, im_fpath, non_vignette, update_db, write_models, write_deltas, write_masks))
+                        tasks.append(pool.submit(lambda an=acquisition_name, fn=_computeFocusMeasures, args=(bgs, im_fpath, non_vignette, update_db, write_models, write_deltas, write_masks): an, fn(*args)))
                     for task in tasks:
                         acquisition_name, focus_measures = task.result()
                         if focus_measures is not None:
@@ -307,6 +304,18 @@ def computeFocusMeasureBestVsFocusedIdxDeltas():
                     list(db.execute('insert into focus_measure_vs_manual_idx_deltas (time_point, well_idx) values(?, ?)', (time_point, well_idx)))
                 list(db.execute('update focus_measure_vs_manual_idx_deltas set {0}_min=?, {0}_max=? where time_point=? and well_idx=?'.format(measure_name), (measure_min_idx_delta, measure_max_idx_delta, time_point, well_idx)))
     db.commit()
+
+def makeFocusMeasureBestVsFocusedIdxDeltaHistograms(image_out_fpath=None):
+    import matplotlib.pyplot as plt
+    db = sqlite3.connect(str(DPATH / 'analysis/db.sqlite3'))
+    measure_names = [d[0] for d in db.execute('select * from images').description][5:]
+    if image_out_fpath is None:
+        plt.ion()
+        fig = plt.figure()
+        fig_idx = fig.number
+    else:
+        raise NotImplementedError()
+
 
 if __name__ == '__main__':
     import sys
