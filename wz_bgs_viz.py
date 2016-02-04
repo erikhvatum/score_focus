@@ -287,8 +287,9 @@ def makeMeasureInputSensitivityComparisonViz(rw, measure_a='model_mask_region_im
     taskN = 0
     pages = []
     page_names = []
-    for task in tasks:
-        o = task.result()
+    import gc
+    while tasks:
+        o = tasks.pop(0).result()
         pages.append(om.SignalingList([
             Image(o.bf_im, name=str(o.bf_im_fpath)),
             Image(o.model_im),
@@ -306,7 +307,9 @@ def makeMeasureInputSensitivityComparisonViz(rw, measure_a='model_mask_region_im
         page_names.append('{: 2} | {: 2} ({})'.format(o.measure_a_idx_delta, o.measure_b_idx_delta, o.bf_im_fpath))
         taskN += 1
         print('{:%}'.format(taskN / taskCount))
-    import gc
+        if taskN % 10 == 0:
+            del o
+            gc.collect()
     rw.flipbook_pages = []
     while pages:
         rw.flipbook_pages.extend(pages[:10])
