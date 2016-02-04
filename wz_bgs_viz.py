@@ -175,6 +175,7 @@ def makeWellViz(rw, wellIdx=14):
 
 def _apply_measure_transform(measure, im, measure_antimask, delta, mask):
     match = re.match(r'(model_mask_region_image|whole_image)_(hp_brenner_sum_of_squares|bp_brenner_sum_of_squares)_(max|min)', measure)
+    delta[measure_antimask] = 0
     if not match:
         raise ValueError()
     if match.group(2) == 'hp_brenner_sum_of_squares':
@@ -246,7 +247,7 @@ def makeMeasureInputSensitivityComparisonViz(rw, measure_a='model_mask_region_im
     measure_a_extrema_fn = lambda v, fn=measure_a_extrema_fn: int(fn(v))
     measure_b_extrema_fn = numpy.argmax if measure_b.endswith('max') else numpy.argmin
     measure_b_extrema_fn = lambda v, fn=measure_b_extrema_fn: int(fn(v))
-    for time_point, well_idx, ma_idx_delta, mb_idx_delta in list(db.execute('select time_point, well_idx, {0}, {1} from focus_measure_vs_manual_idx_deltas order by {0} asc, {1} desc'.format(measure_a, measure_b)))[:50]:
+    for time_point, well_idx, ma_idx_delta, mb_idx_delta in db.execute('select time_point, well_idx, {0}, {1} from focus_measure_vs_manual_idx_deltas order by {0} asc, {1} desc'.format(measure_a, measure_b)):
         z_stack_rows = list(
             db.execute(
                 'select acquisition_name, is_focused, {0}, {1} from images where acquisition_name '
@@ -285,6 +286,7 @@ def makeMeasureInputSensitivityComparisonViz(rw, measure_a='model_mask_region_im
     taskCount = len(tasks)
     taskN = 0
     pages = []
+    page_names = []
     for task in tasks:
         o = task.result()
         pages.append(om.SignalingList([
@@ -301,7 +303,14 @@ def makeMeasureInputSensitivityComparisonViz(rw, measure_a='model_mask_region_im
             Image(o.measure_b_transformed_im),
             Image(o.measure_b_transformed_im_a)
         ]))
-        pages[-1].name = '{} vs {}'.format(measure_a, measure_b)
+        page_names.append('{: 2} | {: 2} ({})'.format(o.measure_a_idx_delta, o.measure_b_idx_delta, o.bf_im_fpath))
         taskN += 1
         print('{:%}'.format(taskN / taskCount))
-    rw.flipbook_pages = pages
+    import gc
+    rw.flipbook_pages = []
+    while pages:
+        rw.flipbook_pages.extend(pages[:10])
+        del pages[:10]
+        gc.collect()
+    for p, n in zip(reversed(rw.flipbook_pages), reversed(page_names)):
+        p.name = n
