@@ -226,7 +226,8 @@ def _computeFocusMeasures(bgs, im_fpath, measure_mask, compute_measures, write_m
                 freeimage.write(
                     (mask*255).astype(numpy.uint8),
                     str(im_fpath.parent / '{} wz_bgs_model_mask.png'.format(im_fpath.stem)))
-        except:
+        except Exception as e:
+            print('skipping position timepoint due to exception: {}'.format(e))
             return
         if compute_measures:
             focus_measures = {}
@@ -261,8 +262,8 @@ def computeFocusMeasures(temporal_radius=11, update_db=True, write_models=False,
                     bgs = position_bgss[position]
                     tasks = []
                     for acquisition_name in acquisition_names:
-                        im_fpath = DPATH / '{:02}'.format(position) / '{} {}_ffc.png'.format(time_point, acquisition_name)
-                        tasks.append(pool.submit(lambda an=acquisition_name, fn=_computeFocusMeasures, args=(bgs, im_fpath, non_vignette, update_db, write_models, write_deltas, write_masks): an, fn(*args)))
+                        im_fpath = DPATH / '{:02}'.format(position) / '{} {}_ffc.tiff'.format(time_point, acquisition_name)
+                        tasks.append(pool.submit(lambda an=acquisition_name, fn=_computeFocusMeasures, args=(bgs, im_fpath, non_vignette, update_db, write_models, write_deltas, write_masks): (an, fn(*args))))
                     for task in tasks:
                         acquisition_name, focus_measures = task.result()
                         if focus_measures is not None:
@@ -275,10 +276,10 @@ def computeFocusMeasures(temporal_radius=11, update_db=True, write_models=False,
                         image_idx += 1
                         print('  {:<10} {:%}'.format(acquisition_name, image_idx / image_count))
                     try:
-                        im = freeimage.read(str(DPATH / '{:02}'.format(position) / '{} bf_ffc.png'.format(time_point)))
+                        im = freeimage.read(str(DPATH / '{:02}'.format(position) / '{} bf_ffc.tiff'.format(time_point)))
                         bgs.updateModel(im)
-                    except:
-                        pass
+                    except Exception as e:
+                        print('ignoring exception: {}'.format(e))
                     db.commit()
 
 def computeFocusMeasureBestVsFocusedIdxDeltas():

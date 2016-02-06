@@ -164,7 +164,7 @@ def makeWellViz(rw, wellIdx=14):
         match = re.match(r'(201.* bf_ffc) wz_bgs_model_mask.png', delta_fpath.name)
         if match:
             prefix = match.group(1)
-            bf_fpath = dpath / '{}.png'.format(prefix)
+            bf_fpath = dpath / '{}.tiff'.format(prefix)
             model_fpath = dpath / '{} {}'.format(prefix, 'wz_bgs_model.tiff')
             mask_fpath = dpath / '{} {}'.format(prefix, 'wz_bgs_model_mask.png')
             delta_fpath = dpath / '{} {}'.format(prefix, 'wz_bgs_model_delta.tiff')
@@ -262,11 +262,11 @@ def makeMeasureInputSensitivityComparisonViz(rw, measure_a='model_mask_region_im
         page_descs.append(
             {
                 'bf_im_fpath'
-                    : DPATH / '{:02}'.format(well_idx) / '{} bf_ffc.png'.format(time_point),
+                    : DPATH / '{:02}'.format(well_idx) / '{} bf_ffc.tiff'.format(time_point),
                 'model_im_fpath'
                     : DPATH / '{:02}'.format(well_idx) / '{} bf_ffc wz_bgs_model.tiff'.format(time_point),
                 'measure_a_im_fpath'
-                    : DPATH / '{:02}'.format(well_idx) / '{} {}_ffc.png'.format(time_point, z_stack_rows[measure_a_extrema_z_idx][0]),
+                    : DPATH / '{:02}'.format(well_idx) / '{} {}_ffc.tiff'.format(time_point, z_stack_rows[measure_a_extrema_z_idx][0]),
                 'measure_a_idx_delta'
                     : int(numpy.abs(focused_z_idx - measure_a_extrema_z_idx)),
                 'measure_a_delta_im_fpath'
@@ -274,7 +274,7 @@ def makeMeasureInputSensitivityComparisonViz(rw, measure_a='model_mask_region_im
                 'measure_a_mask_im_fpath'
                     : DPATH / '{:02}'.format(well_idx) / '{} {}_ffc wz_bgs_model_mask.png'.format(time_point, z_stack_rows[measure_a_extrema_z_idx][0]),
                 'measure_b_im_fpath'
-                    : DPATH / '{:02}'.format(well_idx) / '{} {}_ffc.png'.format(time_point, z_stack_rows[measure_b_extrema_z_idx][0]),
+                    : DPATH / '{:02}'.format(well_idx) / '{} {}_ffc.tiff'.format(time_point, z_stack_rows[measure_b_extrema_z_idx][0]),
                 'measure_b_idx_delta'
                     : int(numpy.abs(focused_z_idx - measure_b_extrema_z_idx)),
                 'measure_b_delta_im_fpath'
