@@ -24,11 +24,11 @@
 
 from concurrent.futures import ThreadPoolExecutor
 import freeimage
-import math
 import numpy
 from pathlib import Path
 import sqlite3
 import sys
+import threading
 import time
 from zplib.image import mask as zplib_image_mask
 
@@ -262,7 +262,7 @@ def computeFocusMeasures(temporal_radius=11, update_db=True, write_models=False,
                     tasks = []
                     for acquisition_name in acquisition_names:
                         im_fpath = DPATH / '{:02}'.format(position) / '{} {}_ffc.png'.format(time_point, acquisition_name)
-                        tasks.append(pool.submit(lambda an=acquisition_name, fn=_computeFocusMeasures, args=(bgs, im_fpath, non_vignette, update_db, write_models, write_deltas, write_masks): an, fn(*args)))
+                        tasks.append(pool.submit(lambda an=acquisition_name, fn=_computeFocusMeasures, args=(bgs, im_fpath, non_vignette, update_db, write_models, write_deltas, write_masks): (an, fn(*args))))
                     for task in tasks:
                         acquisition_name, focus_measures = task.result()
                         if focus_measures is not None:
@@ -323,6 +323,116 @@ def makeFocusMeasureBestVsFocusedIdxDeltaHistograms():
         # if len(xlabel) > 20:
         #     xlabel = xlabel[:20] + '\n' + xlabel[20:]
         plt.ylabel(label)
+
+class WeightedMaskedAutofocusMetric:
+    def __init__(self, shape):
+        pass
+
+    def metric(self, image, antimask, weights):
+        raise NotImplementedError()
+
+class WeightedMaskedBrenner(WeightedMaskedAutofocusMetric):
+    def metric(self, image, antimask, weights):
+        if image.dtype.type is not numpy.float64:
+            image = image.astype(numpy.float64) # otherwise can get overflow in logistic_sigmoid
+        # Exclude unmasked regions from edge detection output lest the masked region's border register as a large, spurious edge that may
+        # dominate the measure and make it a measure of mask region border length rather than information density within the masked region
+        # (depending on image content and spatial filter preprocessing).
+        x_diffs = (image[2:, :] - image[:-2, :])**2
+        x_diffs *= weights[:2558,:]
+        x_diffs[antimask[:2558,:]] = 0
+        y_diffs = (image[:, 2:] - image[:, :-2])**2
+        y_diffs *= weights[:,:2158]
+        y_diffs[antimask[:,:2158]] = 0
+        return x_diffs.sum() + y_diffs.sum()
+
+class WeightedMaskedFilteredBrenner(WeightedMaskedBrenner):
+    def __init__(self, shape):
+        super().__init__(shape)
+        t0 = time.time()
+        self.filter = fast_fft.SpatialFilter(shape, self.PERIOD_RANGE, precision=32, threads=64, better_plan=False)
+        if time.time() - t0 > 0.5:
+            fast_fft.store_plan_hints(FFTW_WISDOM)
+
+    def metric(self, image, antimask, weights):
+        filtered = self.filter.filter(image)
+        return super().metric(filtered, antimask, weights)
+
+class WeightedMaskedHighpassBrenner(WeightedMaskedFilteredBrenner):
+    PERIOD_RANGE = (None, 10)
+
+class WeightedMaskedBandpassBrenner(WeightedMaskedFilteredBrenner):
+    PERIOD_RANGE = (60, 100)
+
+class WeightedMaskedMultiBrenner(WeightedMaskedAutofocusMetric):
+    def __init__(self, shape):
+        super().__init__(shape)
+        self.hp = WeightedMaskedHighpassBrenner(shape)
+        self.bp = WeightedMaskedBandpassBrenner(shape)
+
+    def metric(self, image, antimask, weights):
+        return self.hp.metric(image, antimask, weights), self.bp.metric(image, antimask, weights)
+
+def logistic_sigmoid(x, x0=0, k=1, L=1):
+    return (1 / (1 + numpy.exp(-k * (x - x0) ) )).astype(numpy.float64)
+
+def _computeSigmoidWeightedMeasures(db_lock, measure_antimask, x0, k, L):
+    with db_lock, sqlite3.connect(str(DPATH / 'analysis/db.sqlite3')) as db:
+        column_name = 'x0:{},k:{}'.format(x0, k)
+        time_point_well_idxs = list(db.execute(
+            'select time_point, well_idx from ('
+            '   select time_point, well_idx, sum(is_focused) as sif from images where acquisition_name!="bf" group by time_point, well_idx'
+            ') where sif == 1'))
+    for time_point, well_idx in time_point_well_idxs:
+        with db_lock, sqlite3.connect(str(DPATH / 'analysis/db.sqlite3')) as db:
+            acquisition_names = [row[0] for row in db.execute('select acquisition_name from images where well_idx=? and time_point=?', (well_idx, time_point))]
+        results = []
+        for acquisition_name in acquisition_names:
+            delta_fpath = DPATH / '{:02}'.format(well_idx) / '{} {}_ffc wz_bgs_model_delta.tiff'.format(time_point, acquisition_name)
+            if not delta_fpath.exists():
+                continue
+            image = freeimage.read(str(DPATH / '{:02}'.format(well_idx) / '{} {}_ffc.png'.format(time_point, acquisition_name)))
+            delta = freeimage.read(str(delta_fpath))
+            weights = logistic_sigmoid(delta, x0, k, L)
+            results.append(float(WeightedMaskedHighpassBrenner(image.shape).metric(image, measure_antimask, weights)))
+        if not results:
+            continue
+        with db_lock, sqlite3.connect(str(DPATH / 'analysis/db.sqlite3')) as db:
+            for result, acquisition_name in zip(results, acquisition_names):
+                image_id = list(db.execute(
+                    'select image_id from images where time_point=? and well_idx=? and acquisition_name=?',
+                    (time_point, well_idx, acquisition_name)))[0][0]
+                if list(db.execute('select count(*) from sigmoids where image_id=?', (image_id,)))[0][0] == 0:
+                    list(db.execute('insert into sigmoids (image_id, "{}") values (?, ?)'.format(column_name), (image_id, result)))
+                else:
+                    list(db.execute('update sigmoids set "{}"=? where image_id=?'.format(column_name), (result, image_id)))
+            db.commit()
+
+def computeSigmoidWeightedMeasures(logistic_sigmoid_parameter_sets=None):
+    db_lock = threading.Lock()
+    measure_antimask = freeimage.read(str(DPATH / 'non-vignette.png')) == 0
+    with db_lock, sqlite3.connect(str(DPATH / 'analysis/db.sqlite3')) as db:
+        if logistic_sigmoid_parameter_sets is None:
+            logistic_sigmoid_parameter_sets = [
+                {"x0":x0, "k":k, "L":1, "measure_antimask":measure_antimask, "db_lock":db_lock}
+                for x0 in numpy.linspace(2000, 20000, 20, dtype=numpy.float32) for k in numpy.linspace(1/100, 1/1000, 20, dtype=numpy.float32)
+            ]
+        # If sigmoids table exists, drop it
+        if list(db.execute('select name from sqlite_master where type="table" and name="sigmoids"')):
+            list(db.execute('drop table sigmoids'))
+        # Create sigmoids table with desired columns
+        sigmoid_columns = ['"image_id" integer not null']
+        sigmoid_columns += ['"x0:{},k:{}" REAL'.format(x0, k) for x0, k in ((p["x0"], p["k"]) for p in logistic_sigmoid_parameter_sets)]
+        sigmoid_columns.append('FOREIGN KEY(`image_id`) REFERENCES images ( image_id )')
+        list(db.execute('create table "sigmoids" ({})'.format(',\n'.join(sigmoid_columns))))
+        db.commit()
+    # _computeSigmoidWeightedMeasures(**logistic_sigmoid_parameter_sets[0])
+    tasks = [pool.submit(lambda a: _computeSigmoidWeightedMeasures(**a), p) for p in logistic_sigmoid_parameter_sets]
+    for task in tasks:
+        try:
+            r = task.result()
+        except Exception as e:
+            print(e)
 
 if __name__ == '__main__':
     import sys
