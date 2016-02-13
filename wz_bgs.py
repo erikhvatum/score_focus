@@ -288,7 +288,6 @@ def computeFocusMeasureBestVsFocusedIdxDeltas():
         'select time_point, well_idx from ('
 	    '   select time_point, well_idx, sum(is_focused) as sif from images where acquisition_name!="bf" group by time_point, well_idx'
         ') where sif == 1'))
-    ret = []
     for time_point, well_idx in time_point_well_idxs:
         print(time_point, well_idx)
         for measure_name in measure_names:
@@ -334,7 +333,7 @@ class WeightedMaskedAutofocusMetric:
 class WeightedMaskedBrenner(WeightedMaskedAutofocusMetric):
     def metric(self, image, antimask, weights):
         if image.dtype.type is not numpy.float64:
-            image = image.astype(numpy.float64) # otherwise can get overflow in logistic_sigmoid
+            image = image.astype(numpy.float64) # otherwise can get overflow when applying logistic_sigmoid weights
         # Exclude unmasked regions from edge detection output lest the masked region's border register as a large, spurious edge that may
         # dominate the measure and make it a measure of mask region border length rather than information density within the masked region
         # (depending on image content and spatial filter preprocessing).
@@ -434,88 +433,76 @@ def computeSigmoidWeightedMeasures(logistic_sigmoid_parameter_sets=None):
         except Exception as e:
             print(e)
 
+def _getLogisticSigmoidParameterSets(db):
+    sig_row_0 = list(db.execute('select * from sigmoids'))[0][1:]
+    sig_col_names = [d[0] for d in db.execute('select * from sigmoids').description][1:]
+    # discard empty columns
+    sig_col_names = [sig_col_name for sig_col_name, sig_col_val in zip(sig_col_names, sig_row_0) if sig_col_val is not None]
+    # parse sigmoid parameters out of column names
+    return [{'x0':float(x0[1]), 'k':float(k[1])} for x0, k in ((vv.split(':') for vv in v.split(',')) for v in sig_col_names)], sig_col_names
+
+def computeSigmoidWeightedMeasuresVsFocusedIdxDeltas():
+    db = sqlite3.connect(str(DPATH / 'analysis/db_.sqlite3'))
+    logistic_sigmoid_parameter_sets, sigmoid_idx_delta_column_names = _getLogisticSigmoidParameterSets(db)
+    if list(db.execute('select name from sqlite_master where type="table" and name="sigmoid_weighted_focus_measure_vs_manual_idx_deltas"')):
+        list(db.execute('drop table sigmoid_weighted_focus_measure_vs_manual_idx_deltas'))
+    sigmoid_idx_delta_columns = ['"well_idx" integer not null']
+    sigmoid_idx_delta_columns+= ['"time_point" text not null']
+    sigmoid_idx_delta_columns+= ['"{0}_min" integer,\n"{0}_max" integer'.format(sigmoid_idx_delta_column_name) for sigmoid_idx_delta_column_name in sigmoid_idx_delta_column_names]
+    sigmoid_idx_delta_columns+= ['foreign key("well_idx") references images ( well_idx )']
+    sigmoid_idx_delta_columns+= ['foreign key("time_point") references images ( time_point )']
+    list(db.execute('create table "sigmoid_weighted_focus_measure_vs_manual_idx_deltas" ({})'.format(',\n'.join(sigmoid_idx_delta_columns))))
+    db.commit()
+    time_point_well_idxs = list(db.execute(
+        'select time_point, well_idx from ('
+	    '   select time_point, well_idx, sum(is_focused) as sif from images where acquisition_name!="bf" group by time_point, well_idx'
+        ') where sif == 1'))
+    for time_point, well_idx in time_point_well_idxs:
+        print(time_point, well_idx)
+        image_ids, is_focuseds = zip(*list(db.execute(
+            'select image_id, is_focused from images where time_point=? and well_idx=? and acquisition_name!="bf" order by acquisition_name',
+            (time_point, well_idx))))
+        focused_idx = int(numpy.argmax(is_focuseds))
+        for params, name in zip(logistic_sigmoid_parameter_sets, sigmoid_idx_delta_column_names):
+            sigmoid_rows = [list(db.execute('select "{}" from sigmoids where image_id=?'.format(name), (image_id,))) for image_id in image_ids]
+            if all(sigmoid_row and sigmoid_row[0][0] is not None for sigmoid_row in sigmoid_rows):
+                measure_values = [sigmoid_row[0][0] for sigmoid_row in sigmoid_rows]
+                # print(measure_values)
+                measure_min_idx = int(numpy.argmin(measure_values))
+                measure_min_idx_delta = abs(focused_idx - measure_min_idx)
+                measure_max_idx = int(numpy.argmax(measure_values))
+                measure_max_idx_delta = abs(focused_idx - measure_max_idx)
+                # print(name, measure_min_idx_delta, measure_max_idx_delta)
+                if list(db.execute('select count() from sigmoid_weighted_focus_measure_vs_manual_idx_deltas where time_point=? and well_idx=?', (time_point, well_idx)))[0][0] == 0:
+                    list(db.execute('insert into sigmoid_weighted_focus_measure_vs_manual_idx_deltas (time_point, well_idx) values(?, ?)', (time_point, well_idx)))
+                list(db.execute(
+                    'update sigmoid_weighted_focus_measure_vs_manual_idx_deltas set "{0}_min"=?, "{0}_max"=? where time_point=? and well_idx=?'.format(name),
+                    (measure_min_idx_delta, measure_max_idx_delta, time_point, well_idx)))
+        db.commit()
+
+def makeSigmoidWeightedFocusMeasureBestVsFocusedIdxDeltaHistograms():
+    import matplotlib.pyplot as plt
+    db = sqlite3.connect(str(DPATH / 'analysis/db_.sqlite3'))
+    dbq = db.execute('select * from sigmoid_weighted_focus_measure_vs_manual_idx_deltas')
+    names = [dbqd[0] for dbqd in dbq.description][2:]
+    dbq = db.execute('select * from sigmoid_weighted_focus_measure_vs_manual_idx_deltas')
+    data = numpy.array(list(dbqr[2:] for dbqr in dbq))
+    plt.ioff()
+    fig = plt.figure()
+    dpi = fig.get_dpi()
+    fig.set_size_inches(400/dpi, 500/dpi)
+    for idx, name in enumerate(names):
+        if sum(v is not None for v in data[:, idx]) < 2:
+            continue
+        plt.hist([v for v in data[:, idx] if v is not None], bins=5)
+        label = names[idx]
+        # if len(xlabel) > 20:
+        #     xlabel = xlabel[:20] + '\n' + xlabel[20:]
+        plt.ylabel(label)
+        fig.savefig('{}.png'.format(name.replace(':', '_').replace(',', '-')))
+        fig.clear()
+
+# def combineSigmoidWeightedFocusMeasureBestVsFocusedIdxDeltaHistograms():
+
 if __name__ == '__main__':
-    import sys
-    from PyQt5 import Qt
-    app = Qt.QApplication(sys.argv)
-    from ris_widget.ris_widget import RisWidget
-    rw = RisWidget()
-    rw.show()
-    rw.add_image_files_to_flipbook(('/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-13t1508 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-13t1528 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-13t1548 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-13t1608 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-13t1637 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-13t1704 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-13t1714 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-13t1728 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-13t1748 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-13t1808 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-13t1828 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-13t1848 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-13t1908 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-13t1937 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-13t2004 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-13t2014 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-13t2028 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-13t2048 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-13t2108 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-13t2128 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-13t2148 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-13t2208 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-13t2236 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-13t2304 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-13t2314 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-13t2328 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-13t2348 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0008 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0028 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0048 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0108 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0137 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0204 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0214 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0228 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0248 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0308 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0328 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0348 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0408 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0436 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0504 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0514 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0528 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0548 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0608 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0628 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0648 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0708 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0736 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0804 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0814 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0828 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0848 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0908 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0928 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t0948 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t1008 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t1036 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t1104 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t1114 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t1128 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t1148 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t1208 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t1228 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t1248 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t1308 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t1336 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t1404 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t1414 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t1428 bf_ffc.png',
-                                    '/mnt/bulkdata/Sinha_Drew/2015.11.13_ZPL8Prelim3/14/2015-11-14t1448 bf_ffc.png'))
-    def on_do_button_clicked():
-        processFlipbookPages(rw.flipbook_pages)
-    do_button = Qt.QPushButton('processFlipbookPages')
-    do_button.clicked.connect(on_do_button_clicked)
-    do_button.show()
-    app.exec()
+    pass
