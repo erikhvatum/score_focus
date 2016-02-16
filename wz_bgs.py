@@ -24,6 +24,7 @@
 
 from concurrent.futures import ThreadPoolExecutor
 import freeimage
+import multiprocessing
 import numpy
 from pathlib import Path
 import sqlite3
@@ -178,7 +179,7 @@ class MaskedFilteredBrenner(MaskedBrenner):
     def __init__(self, shape):
         super().__init__(shape)
         t0 = time.time()
-        self.filter = fast_fft.SpatialFilter(shape, self.PERIOD_RANGE, precision=32, threads=64, better_plan=False)
+        self.filter = fast_fft.SpatialFilter(shape, self.PERIOD_RANGE, precision=32, threads=multiprocessing.cpu_count(), better_plan=False)
         if time.time() - t0 > 0.5:
             fast_fft.store_plan_hints(FFTW_WISDOM)
 
@@ -349,7 +350,7 @@ class WeightedMaskedFilteredBrenner(WeightedMaskedBrenner):
     def __init__(self, shape):
         super().__init__(shape)
         t0 = time.time()
-        self.filter = fast_fft.SpatialFilter(shape, self.PERIOD_RANGE, precision=32, threads=64, better_plan=False)
+        self.filter = fast_fft.SpatialFilter(shape, self.PERIOD_RANGE, precision=32, threads=multiprocessing.cpu_count(), better_plan=False)
         if time.time() - t0 > 0.5:
             fast_fft.store_plan_hints(FFTW_WISDOM)
 
@@ -359,6 +360,14 @@ class WeightedMaskedFilteredBrenner(WeightedMaskedBrenner):
 
 class WeightedMaskedHighpassBrenner(WeightedMaskedFilteredBrenner):
     PERIOD_RANGE = (None, 10)
+
+__weighted_masked_highpass_brenner_instances = dict()
+def getWeightedMaskedHighpassBrennerInstance(shape):
+    if shape in __weighted_masked_highpass_brenner_instances:
+        return __weighted_masked_highpass_brenner_instances[shape]
+    else:
+        __weighted_masked_highpass_brenner_instances[shape] = inst = WeightedMaskedHighpassBrenner(shape)
+        return inst
 
 class WeightedMaskedBandpassBrenner(WeightedMaskedFilteredBrenner):
     PERIOD_RANGE = (60, 100)
@@ -375,7 +384,8 @@ class WeightedMaskedMultiBrenner(WeightedMaskedAutofocusMetric):
 def logistic_sigmoid(x, x0=0, k=1, L=1):
     return (1 / (1 + numpy.exp(-k * (x - x0) ) )).astype(numpy.float64)
 
-def _computeSigmoidWeightedMeasures(db_lock, measure_antimask, x0, k, L):
+def _computeSigmoidWeightedMeasures(db_lock, update_db, measure_antimask, x0, k, L):
+    weightedMaskedHighpassBrenner = getWeightedMaskedHighpassBrennerInstance((2560, 1600))
     with db_lock, sqlite3.connect(str(DPATH / 'analysis/db.sqlite3')) as db:
         column_name = 'x0:{},k:{}'.format(x0, k)
         time_point_well_idxs = list(db.execute(
@@ -393,8 +403,8 @@ def _computeSigmoidWeightedMeasures(db_lock, measure_antimask, x0, k, L):
             image = freeimage.read(str(DPATH / '{:02}'.format(well_idx) / '{} {}_ffc.png'.format(time_point, acquisition_name)))
             delta = freeimage.read(str(delta_fpath))
             weights = logistic_sigmoid(delta, x0, k, L)
-            results.append(float(WeightedMaskedHighpassBrenner(image.shape).metric(image, measure_antimask, weights)))
-        if not results:
+            results.append(float(weightedMaskedHighpassBrenner.metric(image, measure_antimask, weights)))
+        if not results or not update_db:
             continue
         with db_lock, sqlite3.connect(str(DPATH / 'analysis/db.sqlite3')) as db:
             for result, acquisition_name in zip(results, acquisition_names):
@@ -407,24 +417,25 @@ def _computeSigmoidWeightedMeasures(db_lock, measure_antimask, x0, k, L):
                     list(db.execute('update sigmoids set "{}"=? where image_id=?'.format(column_name), (result, image_id)))
             db.commit()
 
-def computeSigmoidWeightedMeasures(logistic_sigmoid_parameter_sets=None):
+def computeSigmoidWeightedMeasures(update_db=True, logistic_sigmoid_parameter_sets=None):
     db_lock = threading.Lock()
     measure_antimask = freeimage.read(str(DPATH / 'non-vignette.png')) == 0
     with db_lock, sqlite3.connect(str(DPATH / 'analysis/db.sqlite3')) as db:
         if logistic_sigmoid_parameter_sets is None:
             logistic_sigmoid_parameter_sets = [
-                {"x0":x0, "k":k, "L":1, "measure_antimask":measure_antimask, "db_lock":db_lock}
+                {"x0":x0, "k":k, "L":1, "measure_antimask":measure_antimask, "db_lock":db_lock, "update_db":update_db}
                 for x0 in numpy.linspace(2000, 20000, 20, dtype=numpy.float32) for k in numpy.linspace(1/100, 1/1000, 20, dtype=numpy.float32)
             ]
-        # If sigmoids table exists, drop it
-        if list(db.execute('select name from sqlite_master where type="table" and name="sigmoids"')):
-            list(db.execute('drop table sigmoids'))
-        # Create sigmoids table with desired columns
-        sigmoid_columns = ['"image_id" integer not null']
-        sigmoid_columns += ['"x0:{},k:{}" REAL'.format(x0, k) for x0, k in ((p["x0"], p["k"]) for p in logistic_sigmoid_parameter_sets)]
-        sigmoid_columns.append('FOREIGN KEY(`image_id`) REFERENCES images ( image_id )')
-        list(db.execute('create table "sigmoids" ({})'.format(',\n'.join(sigmoid_columns))))
-        db.commit()
+        if update_db:
+            # If sigmoids table exists, drop it
+            if list(db.execute('select name from sqlite_master where type="table" and name="sigmoids"')):
+                list(db.execute('drop table sigmoids'))
+            # Create sigmoids table with desired columns
+            sigmoid_columns = ['"image_id" integer not null']
+            sigmoid_columns += ['"x0:{},k:{}" REAL'.format(x0, k) for x0, k in ((p["x0"], p["k"]) for p in logistic_sigmoid_parameter_sets)]
+            sigmoid_columns.append('FOREIGN KEY(`image_id`) REFERENCES images ( image_id )')
+            list(db.execute('create table "sigmoids" ({})'.format(',\n'.join(sigmoid_columns))))
+            db.commit()
     # _computeSigmoidWeightedMeasures(**logistic_sigmoid_parameter_sets[0])
     tasks = [pool.submit(lambda a: _computeSigmoidWeightedMeasures(**a), p) for p in logistic_sigmoid_parameter_sets]
     for task in tasks:
@@ -505,4 +516,4 @@ def makeSigmoidWeightedFocusMeasureBestVsFocusedIdxDeltaHistograms():
 # def combineSigmoidWeightedFocusMeasureBestVsFocusedIdxDeltaHistograms():
 
 if __name__ == '__main__':
-    pass
+    computeSigmoidWeightedMeasures()
